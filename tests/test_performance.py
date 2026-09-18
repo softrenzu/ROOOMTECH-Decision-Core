@@ -1,8 +1,10 @@
+import asyncio
+
 import pytest
 
 from app.advanced_models import MapReduceRequest, RealtimeEvent
 from app.engine import DecisionEngine
-from app.fastpath import FastPathEngine
+from app.fastpath import FastPathEngine, FastPathOverloaded
 from app.mapreduce import MapReduceEngine
 from app.operations import OperationalDecisionEngine
 from app.performance import PerformanceBenchmarker
@@ -50,6 +52,9 @@ async def test_fast_profile_prevalidates_rules_route():
     assert result.ok is True
     assert result.data["route"] == "account"
     assert result.target_ms == 1000
+    assert result.queue_ms >= 0
+    assert result.execution_ms >= 0
+    assert result.latency_ms >= result.execution_ms
 
 
 @pytest.mark.asyncio
@@ -93,6 +98,55 @@ async def test_realtime_dispatcher_accepts_fast_event():
     assert result.ok is True
     assert result.data["ok"] is True
     assert result.data["data"]["detected"] is True
+
+
+@pytest.mark.asyncio
+async def test_fast_path_rejects_when_pending_capacity_is_full(monkeypatch):
+    monkeypatch.setenv("RTDC_FAST_WORKERS", "1")
+    monkeypatch.setenv("RTDC_FAST_QUEUE_CAPACITY", "1")
+    monkeypatch.setenv("RTDC_FAST_MAX_QUEUE_WAIT_MS", "1000")
+    _, operations, _, fast, _ = stack()
+    await fast.create_profile(
+        FastProfileCreate(
+            profile_id="slow-route",
+            kind="route",
+            target_ms=1000,
+            request={
+                "provider": "rules",
+                "min_confidence": 0.5,
+                "routes": [
+                    {"id": "billing", "keywords": ["請求"]},
+                    {"id": "account", "keywords": ["ログイン"]},
+                ],
+            },
+        )
+    )
+
+    original_route = operations.route
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_route(request):
+        entered.set()
+        await release.wait()
+        return await original_route(request)
+
+    monkeypatch.setattr(operations, "route", slow_route)
+    first = asyncio.create_task(
+        fast.execute(FastDecisionRequest(profile_id="slow-route", input="ログインできません"))
+    )
+    await entered.wait()
+
+    with pytest.raises(FastPathOverloaded):
+        await fast.execute(FastDecisionRequest(profile_id="slow-route", input="請求を確認したい"))
+
+    release.set()
+    result = await first
+    assert result.ok is True
+    info = fast.runtime_info()
+    assert info["rejected"] == 1
+    assert info["pending"] == 0
+    assert info["inflight"] == 0
 
 
 @pytest.mark.asyncio
