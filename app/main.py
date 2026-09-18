@@ -9,11 +9,14 @@ load_dotenv()
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from app import __version__
+from app.benchmark import BenchmarkRunner
 from app.engine import DecisionEngine
 from app.license import LicenseError, verify_runtime_license
 from app.models import (
     BatchRequest,
     BatchResponse,
+    BenchmarkRequest,
+    BenchmarkResponse,
     DecisionRequest,
     DecisionResponse,
     LocalModelSummary,
@@ -26,9 +29,10 @@ from app.models import (
 app = FastAPI(
     title="ROOOMTECH Decision Core",
     version=__version__,
-    description="Independent structured-decision API with local multilingual classifiers, GPU inference and optional LLM fallback.",
+    description="Independent structured-decision API with local multilingual classifiers, GPU inference, benchmarking and optional LLM fallback.",
 )
 engine = DecisionEngine()
+benchmark_runner = BenchmarkRunner(engine.local)
 
 
 def require_admin(x_rtdc_admin_key: str | None = Header(default=None)):
@@ -119,3 +123,22 @@ async def predict_local_model(model_id: str, request: LocalPredictRequest):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"prediction error: {exc}") from exc
+
+
+@app.post(
+    "/v1/benchmarks/local",
+    response_model=BenchmarkResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def benchmark_local(request: BenchmarkRequest):
+    """Measure held-out accuracy, calibration and local inference latency.
+
+    The endpoint never calls an external model. Benchmark examples are evaluated in memory
+    and are not persisted by Decision Core.
+    """
+    try:
+        return await asyncio.to_thread(benchmark_runner.run_local, request)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"benchmark error: {exc}") from exc
