@@ -64,6 +64,7 @@ _RISKY_TOOL_PATTERNS = [
 _EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?81[- ]?)?(?:0\d{1,4}[- ]?\d{1,4}[- ]?\d{3,4})(?!\d)")
 _CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
 _SECRET_RES = [
     re.compile(r"(?i)\b(?:bearer\s+)[A-Za-z0-9._~+/-]{16,}={0,2}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -96,7 +97,7 @@ def _risky_matches(text: str) -> list[str]:
     return _keyword_matches(text, _RISKY_TOOL_PATTERNS)
 
 
-def _char_ngrams(text: str, n: int = 2) -> set[str]:
+def _char_ngrams(text: str, n: int = 3) -> set[str]:
     normalized = normalize_text(text)
     if not normalized:
         return set()
@@ -105,12 +106,26 @@ def _char_ngrams(text: str, n: int = 2) -> set[str]:
     return {normalized[i : i + n] for i in range(len(normalized) - n + 1)}
 
 
+def _token_recall(claim: str, context: str) -> float | None:
+    claim_tokens = {item for item in _WORD_RE.findall(normalize_text(claim)) if len(item) > 1}
+    if len(claim_tokens) < 3:
+        return None
+    context_tokens = set(_WORD_RE.findall(normalize_text(context)))
+    return len(claim_tokens & context_tokens) / len(claim_tokens)
+
+
 def _lexical_support(claim: str, context: str) -> float:
     claim_grams = _char_ngrams(claim)
     if not claim_grams:
         return 0.0
     context_grams = _char_ngrams(context)
-    return min(1.0, len(claim_grams & context_grams) / len(claim_grams))
+    char_recall = len(claim_grams & context_grams) / len(claim_grams)
+    token_recall = _token_recall(claim, context)
+    if token_recall is None:
+        return min(1.0, char_recall)
+    # Character trigrams work across languages; token recall reduces false support from
+    # generic English phrasing. This remains a lexical screening signal, not entailment.
+    return min(1.0, 0.55 * char_recall + 0.45 * token_recall)
 
 
 class GuardrailEngine:
