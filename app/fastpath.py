@@ -34,6 +34,16 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+class FastPathOverloaded(RuntimeError):
+    """Raised before execution when the bounded realtime scheduler cannot accept work."""
+
+    def __init__(self, reason: str, queue_depth: int, capacity: int):
+        self.reason = reason
+        self.queue_depth = queue_depth
+        self.capacity = capacity
+        super().__init__(f"fast path overloaded: {reason}; queue_depth={queue_depth}; capacity={capacity}")
+
+
 @dataclass
 class CompiledProfile:
     summary: FastProfileSummary
@@ -43,10 +53,10 @@ class CompiledProfile:
 class FastPathEngine:
     """Prevalidated, network-free execution profiles for latency-sensitive decisions.
 
-    Profiles intentionally disallow provider modes that can make external network calls.
-    This makes the fast path predictable: rules, local classifiers, local n-gram ranking,
-    or heuristic schema extraction only. The 150 ms figure is a target that is measured
-    per request; it is not a hard guarantee.
+    The fast path uses bounded concurrent worker slots. Requests above the configured
+    pending capacity are rejected instead of allowing an unbounded latency queue. Local
+    classifier inference is micro-batched by LocalClassifierProvider, including a
+    serialized GPU inference gate when CUDA is used.
     """
 
     def __init__(self, decision_engine, operations_engine, schema_extractor):
@@ -54,8 +64,31 @@ class FastPathEngine:
         self.operations_engine = operations_engine
         self.schema_extractor = schema_extractor
         self.profile_limit = max(1, int(os.getenv("RTDC_FAST_PROFILE_LIMIT", "1000")))
+        self.worker_slots = max(1, int(os.getenv("RTDC_FAST_WORKERS", "32")))
+        self.queue_capacity = max(self.worker_slots, int(os.getenv("RTDC_FAST_QUEUE_CAPACITY", "4096")))
+        self.max_queue_wait_ms = max(0.0, float(os.getenv("RTDC_FAST_MAX_QUEUE_WAIT_MS", "100")))
         self._profiles: dict[str, CompiledProfile] = {}
         self._lock = asyncio.Lock()
+        self._state_lock = asyncio.Lock()
+        self._slots = asyncio.Semaphore(self.worker_slots)
+        self._pending = 0
+        self._inflight = 0
+        self._rejected = 0
+        self._queue_timeouts = 0
+        self._completed = 0
+
+    def runtime_info(self) -> dict[str, int | float]:
+        return {
+            "workers": self.worker_slots,
+            "pending_capacity": self.queue_capacity,
+            "pending": self._pending,
+            "inflight": self._inflight,
+            "queue_depth": max(0, self._pending - self._inflight),
+            "max_queue_wait_ms": self.max_queue_wait_ms,
+            "rejected": self._rejected,
+            "queue_timeouts": self._queue_timeouts,
+            "completed": self._completed,
+        }
 
     def _compile(self, spec: FastProfileCreate) -> tuple[BaseModel, str, list[str]]:
         config = dict(spec.request)
@@ -167,15 +200,59 @@ class FastPathEngine:
         profile = self._profiles.get(request.profile_id)
         if not profile:
             raise FileNotFoundError(f"fast profile not found: {request.profile_id}")
+        if len(request.input) > self._input_limit(profile.summary.kind):
+            raise ValueError(f"input exceeds fast-profile limit for kind={profile.summary.kind}")
 
+        async with self._state_lock:
+            if self._pending >= self.queue_capacity:
+                self._rejected += 1
+                raise FastPathOverloaded(
+                    "pending_capacity_exceeded",
+                    max(0, self._pending - self._inflight),
+                    self.queue_capacity,
+                )
+            self._pending += 1
+
+        queued_at = time.perf_counter()
+        acquired = False
+        try:
+            try:
+                if self.max_queue_wait_ms > 0:
+                    await asyncio.wait_for(self._slots.acquire(), timeout=self.max_queue_wait_ms / 1000.0)
+                else:
+                    await self._slots.acquire()
+                acquired = True
+            except TimeoutError as exc:
+                async with self._state_lock:
+                    self._queue_timeouts += 1
+                    self._rejected += 1
+                    queue_depth = max(0, self._pending - self._inflight)
+                raise FastPathOverloaded("queue_wait_timeout", queue_depth, self.queue_capacity) from exc
+
+            queue_ms = (time.perf_counter() - queued_at) * 1000.0
+            async with self._state_lock:
+                self._inflight += 1
+            return await self._execute_direct(request, profile, queue_ms)
+        finally:
+            if acquired:
+                self._slots.release()
+            async with self._state_lock:
+                if acquired:
+                    self._inflight = max(0, self._inflight - 1)
+                self._pending = max(0, self._pending - 1)
+
+    async def _execute_direct(
+        self,
+        request: FastDecisionRequest,
+        profile: CompiledProfile,
+        queue_ms: float,
+    ) -> FastDecisionResponse:
         started = time.perf_counter()
         ok = True
         error = None
         data: Any = None
         try:
             kind = profile.summary.kind
-            if len(request.input) > self._input_limit(kind):
-                raise ValueError(f"input exceeds fast-profile limit for kind={kind}")
             template = profile.template
             if kind == "decide":
                 data = _jsonable(await self.decision_engine.decide(template.model_copy(update={"input": request.input})))
@@ -199,7 +276,10 @@ class FastPathEngine:
             ok = False
             error = f"{type(exc).__name__}: {exc}"
 
-        latency_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        execution_ms = (time.perf_counter() - started) * 1000.0
+        latency_ms = queue_ms + execution_ms
+        async with self._state_lock:
+            self._completed += 1
         return FastDecisionResponse(
             request_id=request.request_id,
             profile_id=request.profile_id,
@@ -208,7 +288,9 @@ class FastPathEngine:
             data=data,
             error=error,
             provider=profile.summary.provider,
-            latency_ms=latency_ms,
+            latency_ms=round(latency_ms, 3),
+            queue_ms=round(queue_ms, 3),
+            execution_ms=round(execution_ms, 3),
             target_ms=profile.summary.target_ms,
             within_target=bool(ok and latency_ms <= profile.summary.target_ms),
         )
