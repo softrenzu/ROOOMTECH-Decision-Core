@@ -160,11 +160,39 @@ class BenchmarkRequest(BaseModel):
     max_errors: int = Field(default=25, ge=0, le=500)
 
 
+class BenchmarkError(BaseModel):
+    index: int
+    expected: str
+    predicted: str
+    confidence: float
+
+
+class BenchmarkLabelMetrics(BaseModel):
+    label: str
+    precision: float
+    recall: float
+    f1: float
+    support: int
+
+
+class BenchmarkTiming(BaseModel):
+    cold_start_ms: float
+    mean_item_ms: float
+    p50_item_ms: float
+    p95_item_ms: float
+    p99_item_ms: float
+    throughput_items_per_second: float
+    timed_seconds: float
+
+
 class BenchmarkResponse(BaseModel):
     model_id: str
     device: str
     examples: int
-    labels: list[str]
+    repeat_runs: int
+    batch_size: int
+    confidence_threshold: float
+    timings: BenchmarkTiming
     accuracy: float
     macro_precision: float
     macro_recall: float
@@ -173,18 +201,9 @@ class BenchmarkResponse(BaseModel):
     expected_calibration_error: float
     coverage_at_threshold: float
     selective_accuracy_at_threshold: float | None
-    confidence_threshold: float
+    per_label: list[BenchmarkLabelMetrics]
     confusion_matrix: dict[str, dict[str, int]]
-    per_label: dict[str, dict[str, float]]
-    cold_start_ms: float
-    mean_latency_ms_per_item: float
-    p50_latency_ms_per_item: float
-    p95_latency_ms_per_item: float
-    p99_latency_ms_per_item: float
-    throughput_items_per_second: float
-    repeat_runs: int
-    warmup_runs: int
-    errors: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[BenchmarkError] = Field(default_factory=list)
     raw_text_persisted: bool = False
 
 
