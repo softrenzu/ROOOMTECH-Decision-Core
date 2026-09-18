@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from app.benchmark import BenchmarkRunner
 from app.ml.local_classifier import LocalClassifierProvider
 from app.models import BenchmarkRequest, TrainModelRequest
-
-
-ROOT = Path(__file__).resolve().parents[1]
-DATASET_PATH = ROOT / "benchmarks" / "japanese_hospitality_intent_360.json"
+from benchmarks.japanese_hospitality_intent_360 import build_dataset
 
 
 def main():
-    dataset = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
+    dataset = build_dataset()
     train_examples = [
         {"text": row["text"], "label": row["label"]}
         for row in dataset["examples"]
