@@ -5,6 +5,9 @@ on:
   push:
     paths:
       - ".github/workflows/performance-ml.yml"
+      - "app/fastpath.py"
+      - "app/ml/local_classifier.py"
+      - "benchmarks/websocket_realtime_load.py"
 
 jobs:
   measure-local-classifier:
@@ -33,54 +36,16 @@ jobs:
         run: |
           python - <<'PY' | tee local-profile.json
           import json, httpx
-
-          account = [
-              "ログインできません", "パスワードを忘れました", "アカウントに入れない", "認証に失敗します",
-              "パスワードを変更したい", "ログイン方法を教えて", "アカウントを復旧したい", "サインインできません"
-          ]
-          billing = [
-              "請求書を再発行してください", "料金の請求について確認したい", "支払い金額を確認したい", "請求が二重です",
-              "領収書が欲しい", "決済について質問です", "料金明細をください", "請求先を変更したい"
-          ]
+          account = ["ログインできません", "パスワードを忘れました", "アカウントに入れない", "認証に失敗します", "パスワードを変更したい", "ログイン方法を教えて", "アカウントを復旧したい", "サインインできません"]
+          billing = ["請求書を再発行してください", "料金の請求について確認したい", "支払い金額を確認したい", "請求が二重です", "領収書が欲しい", "決済について質問です", "料金明細をください", "請求先を変更したい"]
           examples = []
           for i in range(10):
-              for text in account:
-                  examples.append({"text": f"{text} {i}", "label": "account"})
-              for text in billing:
-                  examples.append({"text": f"{text} {i}", "label": "billing"})
-
-          train = {
-              "decision_id": "support_route",
-              "model_name": "performance-smoke-local-route",
-              "examples": examples,
-              "feature_dim": 1024,
-              "ngram_min": 1,
-              "ngram_max": 3,
-              "epochs": 20,
-              "learning_rate": 0.03,
-              "batch_size": 32,
-              "validation_split": 0.2,
-              "device": "cpu"
-          }
+              examples.extend({"text": f"{text} {i}", "label": "account"} for text in account)
+              examples.extend({"text": f"{text} {i}", "label": "billing"} for text in billing)
+          train = {"decision_id":"support_route","model_name":"performance-smoke-local-route","examples":examples,"feature_dim":1024,"ngram_min":1,"ngram_max":3,"epochs":20,"learning_rate":0.03,"batch_size":32,"validation_split":0.2,"device":"cpu"}
           with httpx.Client(base_url="http://127.0.0.1:8000", timeout=120.0) as client:
-              trained = client.post("/v1/models/train", json=train)
-              trained.raise_for_status()
-              trained = trained.json()
-              profile = client.post("/v1/realtime/profiles", json={
-                  "profile_id": "perf-local-route",
-                  "kind": "route",
-                  "target_ms": 150,
-                  "prewarm": True,
-                  "request": {
-                      "provider": "local_classifier",
-                      "model_id": trained["model_id"],
-                      "min_confidence": 0.5,
-                      "routes": [
-                          {"id": "billing", "description": "billing and payment"},
-                          {"id": "account", "description": "login and account"}
-                      ]
-                  }
-              })
+              trained = client.post("/v1/models/train", json=train); trained.raise_for_status(); trained = trained.json()
+              profile = client.post("/v1/realtime/profiles", json={"profile_id":"perf-local-route","kind":"route","target_ms":150,"prewarm":True,"request":{"provider":"local_classifier","model_id":trained["model_id"],"min_confidence":0.5,"routes":[{"id":"billing","description":"billing and payment"},{"id":"account","description":"login and account"}]}})
               profile.raise_for_status()
               print(json.dumps({"training": trained, "profile": profile.json()}, ensure_ascii=False, indent=2))
           PY
@@ -97,21 +62,21 @@ jobs:
         run: |
           python - <<'PY' | tee local-classifier-inprocess.json
           import json, httpx
-          payload = {
-              "profile_id": "perf-local-route",
-              "inputs": [
-                  "ログインできません",
-                  "請求書を再発行してください",
-                  "パスワードを変更したいです",
-                  "支払い金額を確認したいです"
-              ],
-              "repeat_runs": 250,
-              "concurrency": 32,
-              "warmup_runs": 10
-          }
+          payload = {"profile_id":"perf-local-route","inputs":["ログインできません","請求書を再発行してください","パスワードを変更したいです","支払い金額を確認したいです"],"repeat_runs":250,"concurrency":32,"warmup_runs":10}
           response = httpx.post("http://127.0.0.1:8000/v1/benchmarks/realtime-fast", json=payload, timeout=120.0)
           response.raise_for_status()
           print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+          PY
+      - name: Enforce local-classifier realtime gates
+        run: |
+          python - <<'PY'
+          import json
+          ws = json.load(open("local-classifier-ws.json"))
+          assert ws["errors"] == 0, ws
+          assert ws["server_target_hit_rate"] >= 0.999, ws
+          assert ws["roundtrip_p95_ms"] < 150, ws
+          assert ws["server_p95_ms"] < 150, ws
+          print("local classifier realtime gates passed")
           PY
       - name: Upload measured results
         uses: actions/upload-artifact@v4
