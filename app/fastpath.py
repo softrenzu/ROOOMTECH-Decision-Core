@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -56,9 +57,9 @@ class FastPathEngine:
 
     The fast path uses bounded concurrent worker slots. Requests above the configured
     pending capacity are rejected instead of allowing an unbounded latency queue. Local
-    classifier inference uses accelerator-aware scheduling. When the optional Redis
-    profile registry is enabled, multiple server processes can share profile definitions
-    while keeping compiled profiles and inference on the local hot path.
+    classifier inference uses accelerator-aware scheduling. With the optional Redis
+    registry, profile definitions are shared and process-local compiled copies are
+    invalidated over Pub/Sub when another worker updates or deletes a profile.
     """
 
     def __init__(self, decision_engine, operations_engine, schema_extractor):
@@ -71,6 +72,8 @@ class FastPathEngine:
         self.queue_capacity = max(self.worker_slots, int(os.getenv("RTDC_FAST_QUEUE_CAPACITY", "4096")))
         self.max_queue_wait_ms = max(0.0, float(os.getenv("RTDC_FAST_MAX_QUEUE_WAIT_MS", "100")))
         self._profiles: dict[str, CompiledProfile] = {}
+        self._profile_load_locks: dict[str, asyncio.Lock] = {}
+        self._registry_listener_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._slots = asyncio.Semaphore(self.worker_slots)
@@ -80,6 +83,30 @@ class FastPathEngine:
         self._queue_timeouts = 0
         self._completed = 0
         self._shared_profile_loads = 0
+        self._shared_profile_invalidations = 0
+
+    async def start(self) -> None:
+        if self.registry.configured and (self._registry_listener_task is None or self._registry_listener_task.done()):
+            self._registry_listener_task = asyncio.create_task(
+                self.registry.listen(self._on_shared_profile_event),
+                name="rtdc-fast-profile-registry",
+            )
+            await asyncio.sleep(0)
+
+    async def stop(self) -> None:
+        task = self._registry_listener_task
+        self._registry_listener_task = None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    async def _on_shared_profile_event(self, action: str, profile_id: str) -> None:
+        if action not in {"upsert", "delete"}:
+            return
+        async with self._lock:
+            if self._profiles.pop(profile_id, None) is not None:
+                self._shared_profile_invalidations += 1
 
     def runtime_info(self) -> dict[str, int | float | bool]:
         return {
@@ -93,7 +120,9 @@ class FastPathEngine:
             "queue_timeouts": self._queue_timeouts,
             "completed": self._completed,
             "shared_profile_registry": self.registry.configured,
+            "shared_profile_listener": bool(self._registry_listener_task and not self._registry_listener_task.done()),
             "shared_profile_loads": self._shared_profile_loads,
+            "shared_profile_invalidations": self._shared_profile_invalidations,
         }
 
     def _compile(self, spec: FastProfileCreate) -> tuple[BaseModel, str, list[str]]:
@@ -181,15 +210,16 @@ class FastPathEngine:
             prewarmed=prewarmed,
             created_at=created_at,
         )
+
+        if persist and self.registry.configured:
+            persisted_spec = spec.model_copy(update={"profile_id": profile_id})
+            await self.registry.save(persisted_spec, summary)
+
         async with self._lock:
             if profile_id not in self._profiles and len(self._profiles) >= self.profile_limit:
                 oldest = min(self._profiles.values(), key=lambda item: item.summary.created_at)
                 self._profiles.pop(oldest.summary.profile_id, None)
             self._profiles[profile_id] = CompiledProfile(summary=summary, template=template)
-
-        if persist and self.registry.configured:
-            persisted_spec = spec.model_copy(update={"profile_id": profile_id})
-            await self.registry.save(persisted_spec, summary)
         return summary
 
     async def create_profile(self, spec: FastProfileCreate) -> FastProfileSummary:
@@ -198,17 +228,25 @@ class FastPathEngine:
     async def _load_shared_profile(self, profile_id: str) -> CompiledProfile | None:
         if not self.registry.configured:
             return None
-        row = await self.registry.get(profile_id)
-        if row is None:
-            return None
-        spec, stored_summary = row
+
         async with self._lock:
             existing = self._profiles.get(profile_id)
-        if existing is not None:
-            return existing
-        await self._install_profile(spec, persist=False, stored_summary=stored_summary)
-        self._shared_profile_loads += 1
-        return self._profiles.get(profile_id)
+            if existing is not None:
+                return existing
+            load_lock = self._profile_load_locks.setdefault(profile_id, asyncio.Lock())
+
+        async with load_lock:
+            async with self._lock:
+                existing = self._profiles.get(profile_id)
+                if existing is not None:
+                    return existing
+            row = await self.registry.get(profile_id)
+            if row is None:
+                return None
+            spec, stored_summary = row
+            await self._install_profile(spec, persist=False, stored_summary=stored_summary)
+            self._shared_profile_loads += 1
+            return self._profiles.get(profile_id)
 
     def get_profile(self, profile_id: str) -> FastProfileSummary:
         profile = self._profiles.get(profile_id)
@@ -227,9 +265,9 @@ class FastPathEngine:
         return sorted(by_id.values(), key=lambda item: item.created_at)
 
     async def delete_profile(self, profile_id: str) -> bool:
+        shared_deleted = await self.registry.delete(profile_id) if self.registry.configured else False
         async with self._lock:
             local_deleted = self._profiles.pop(profile_id, None) is not None
-        shared_deleted = await self.registry.delete(profile_id) if self.registry.configured else False
         return local_deleted or shared_deleted
 
     @staticmethod
