@@ -49,6 +49,8 @@ async def run(args):
 
     roundtrip_latencies: list[float] = []
     server_latencies: list[float] = []
+    queue_latencies: list[float] = []
+    execution_latencies: list[float] = []
     errors = 0
     server_target_hits = 0
     headers = None
@@ -89,6 +91,10 @@ async def run(args):
                         nested = response.get("data") or {}
                         if isinstance(nested.get("latency_ms"), (int, float)):
                             server_latencies.append(float(nested["latency_ms"]))
+                        if isinstance(nested.get("queue_ms"), (int, float)):
+                            queue_latencies.append(float(nested["queue_ms"]))
+                        if isinstance(nested.get("execution_ms"), (int, float)):
+                            execution_latencies.append(float(nested["execution_ms"]))
                         if nested.get("within_target"):
                             server_target_hits += 1
                 except Exception:
@@ -112,6 +118,8 @@ async def run(args):
         "requests_per_second": round(args.requests / wall_seconds, 3),
         **stats(roundtrip_latencies, "roundtrip"),
         **stats(server_latencies, "server"),
+        **stats(queue_latencies, "queue"),
+        **stats(execution_latencies, "execution"),
         "server_target_hit_rate": round(server_target_hits / args.requests, 6) if args.requests else 0.0,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
