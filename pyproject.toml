@@ -1,7 +1,7 @@
 [project]
 name = "rooomtech-decision-core"
-version = "0.8.0"
-description = "Independent multimodal decision API with low-latency profiles, structured extraction, Map/Reduce and realtime streaming"
+version = "0.9.0"
+description = "Independent multimodal decision platform with realtime inference, calibration, human review, structured extraction and Map/Reduce"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
