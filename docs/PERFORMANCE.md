@@ -1,6 +1,6 @@
 # Performance and latency methodology
 
-ROOOMTECH Decision Core 0.7 introduces a latency-sensitive fast path and explicit load benchmarks. The design goal is to make latency measurable and controllable rather than to publish an unconditional speed claim.
+ROOOMTECH Decision Core includes a latency-sensitive fast path and explicit load benchmarks. The design goal is to make latency measurable and controllable rather than to publish an unconditional speed claim.
 
 ## Realtime fast profiles
 
@@ -17,15 +17,49 @@ Supported network-free profile modes:
 
 Profiles are process-local and are not persisted. Recreate them after restart. `RTDC_FAST_PROFILE_LIMIT` controls the maximum in-memory profile count.
 
-## 150 ms target
+## Bounded realtime scheduler and backpressure
+
+The fast path uses a bounded scheduler instead of allowing an unlimited request backlog.
+
+- `RTDC_FAST_WORKERS` controls concurrent fast-path execution slots. Default: 32.
+- `RTDC_FAST_QUEUE_CAPACITY` caps total pending plus in-flight fast-path work. Default: 4096.
+- `RTDC_FAST_MAX_QUEUE_WAIT_MS` limits how long a request may wait for an execution slot. Default: 100 ms.
+
+When pending capacity is exhausted or queue wait exceeds the configured limit, `/v1/realtime/fast` returns HTTP 429 rather than allowing latency to grow without bound. WebSocket callers receive the overload as an error result from the realtime dispatcher.
+
+`GET /v1/info` exposes current scheduler counters including pending, in-flight, queue depth, rejections and queue timeouts.
+
+For a strict low-latency application, set `RTDC_FAST_MAX_QUEUE_WAIT_MS` below the application's total latency budget. Capacity should be increased only after measuring CPU/GPU saturation; a larger queue by itself does not create more compute capacity.
+
+## Automatic local-classifier batching
+
+Concurrent local-classifier requests sharing the same model, allowed choices and device are automatically collected into a short micro-batch and executed through one `predict_many` call.
+
+- `RTDC_LOCAL_BATCH_MAX` controls maximum batch size. Default: 64.
+- `RTDC_LOCAL_BATCH_WAIT_MS` controls the collection window. Default: 0.5 ms.
+- `RTDC_LOCAL_INFERENCE_QUEUE_CAPACITY` caps the per-model inference queue. Default: 4096.
+
+A small collection window can materially improve throughput on accelerators while adding very little latency at low load. The correct value depends on traffic shape and model cost; do not assume a larger batch is always faster.
+
+## GPU inference queue
+
+When the local classifier resolves to CUDA, inference batches pass through a bounded GPU execution gate. `RTDC_GPU_INFERENCE_SLOTS` defaults to 1 so multiple application requests do not launch an unlimited number of concurrent GPU kernels or duplicate peak memory pressure.
+
+CPU inference has a separate concurrency gate controlled by `RTDC_CPU_INFERENCE_SLOTS`; when omitted it defaults to the smaller of 8 and the available CPU count.
+
+The local batching counters and device information are exposed by `GET /v1/accelerator` and under `local_ml` in `GET /v1/info`.
+
+## Latency target
 
 The default profile target is 150 ms. Every `/v1/realtime/fast` response reports:
 
-- `latency_ms`: measured execution time inside the Decision Core process
-- `target_ms`: the configured profile target
-- `within_target`: whether the request completed successfully within the target
+- `queue_ms`: time waiting for a fast-path execution slot;
+- `execution_ms`: execution time after a slot was acquired;
+- `latency_ms`: `queue_ms + execution_ms`;
+- `target_ms`: the configured profile target;
+- `within_target`: whether the request completed successfully within the target using total in-process latency.
 
-Do not treat 150 ms as a guarantee. Performance varies with CPU/GPU, container limits, input length, classifier size, concurrent load, Python runtime, operating system, and surrounding network/proxy latency.
+Do not treat the configured target as a guarantee. Performance varies with CPU/GPU, container limits, input length, classifier size, concurrent load, Python runtime, operating system, and surrounding network/proxy latency.
 
 For a user-facing claim, benchmark the same build, hardware, deployment region, concurrency and input distribution that will be used in production.
 
@@ -49,14 +83,7 @@ Example:
 }
 ```
 
-The response includes:
-
-- total measured calls
-- error count
-- wall-clock duration
-- minimum / mean / p50 / p95 / p99 / maximum latency
-- calls per second
-- target-hit rate
+The response includes total measured calls, error count, wall-clock duration, minimum / mean / p50 / p95 / p99 / maximum latency, calls per second and target-hit rate.
 
 The benchmark measures queueing plus execution inside the process under the requested burst load. This is useful for capacity planning, but it does not include client-to-server network transit.
 
@@ -78,6 +105,12 @@ Add `--api-key` when `RTDC_REALTIME_API_KEY` is configured.
 This utility measures round-trip HTTP latency from the benchmark client and therefore includes serialization, ASGI/server handling and network transport between the client and server.
 
 Run the client on a separate machine or container when you want a realistic end-to-end test.
+
+## Process-level workers
+
+`RTDC_FAST_WORKERS` is an in-process concurrency limit; it is not a replacement for multiple server processes. For CPU-heavy production deployments, multiple Uvicorn/Gunicorn worker processes can be used after validating that model memory and profile lifecycle behavior are acceptable. Each process has its own in-memory fast profiles and local model cache.
+
+For GPU deployments, blindly multiplying server processes can duplicate model memory. Prefer a small number of application processes with the GPU inference gate and measured batching behavior before increasing process count.
 
 ## Map/Reduce load benchmark
 
