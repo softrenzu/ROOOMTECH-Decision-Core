@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0 - 2026-09-19
+
+- Added prevalidated realtime fast profiles for latency-sensitive workloads
+- Fast profiles reject external-network provider modes and support rules, local classifiers, local n-gram ranking and heuristic extraction
+- Added local classifier prewarming during profile creation
+- Added per-request `target_ms` and `within_target` reporting with a default 150 ms target
+- Added HTTP fast endpoint and WebSocket `fast` event support
+- Added realtime burst benchmark with p50/p95/p99 latency, throughput, errors and target-hit rate
+- Added repeated Map/Reduce load benchmark with per-run items/second and failure counts
+- Added transport-inclusive HTTP load-test utility and performance methodology documentation
+- Added optional realtime API-key enforcement to the NDJSON realtime endpoint as well as WebSocket/fast endpoints
+
 ## 0.6.0 - 2026-09-19
 
 - Added arbitrary JSON Schema structured extraction with output validation
