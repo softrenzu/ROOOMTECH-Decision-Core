@@ -364,3 +364,7 @@ async def benchmark_mapreduce_load(request: MapReduceLoadBenchmarkRequest):
         return await performance_benchmarker.benchmark_mapreduce(request)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"map/reduce benchmark error: {exc}") from exc
+
+
+from app.studio_api import install_studio
+studio_services = install_studio(app, engine, fast_path)
