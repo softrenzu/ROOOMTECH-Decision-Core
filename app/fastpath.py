@@ -155,6 +155,14 @@ class FastPathEngine:
         async with self._lock:
             return self._profiles.pop(profile_id, None) is not None
 
+    @staticmethod
+    def _input_limit(kind: str) -> int:
+        if kind == "rank":
+            return 5_000
+        if kind == "extract":
+            return 200_000
+        return 100_000
+
     async def execute(self, request: FastDecisionRequest) -> FastDecisionResponse:
         profile = self._profiles.get(request.profile_id)
         if not profile:
@@ -166,6 +174,8 @@ class FastPathEngine:
         data: Any = None
         try:
             kind = profile.summary.kind
+            if len(request.input) > self._input_limit(kind):
+                raise ValueError(f"input exceeds fast-profile limit for kind={kind}")
             template = profile.template
             if kind == "decide":
                 data = _jsonable(await self.decision_engine.decide(template.model_copy(update={"input": request.input})))
