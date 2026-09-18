@@ -107,6 +107,7 @@ async def info():
             "classification", "detection", "routing", "scoring", "verification",
             "ranking", "search", "feature_extraction", "structured_extraction",
             "mapreduce", "realtime_streaming", "realtime_fast_path", "performance_benchmarking",
+            "governed_datasets", "active_learning",
         ],
         "fast_path": {
             "profile_count": len(profiles),
@@ -116,7 +117,7 @@ async def info():
         },
         "distributed_mapreduce": distributed_mapreduce.configured,
         "license": license_info,
-        "raw_input_persistence": "none-by-default; distributed Redis jobs persist payloads temporarily when explicitly enabled",
+        "raw_input_persistence": "none-by-default except operator-created training datasets and explicitly retained review inputs",
     }
 
 
@@ -367,4 +368,7 @@ async def benchmark_mapreduce_load(request: MapReduceLoadBenchmarkRequest):
 
 
 from app.studio_api import install_studio
+from app.dataset_api import install_dataset_api
+
 studio_services = install_studio(app, engine, fast_path)
+dataset_services = install_dataset_api(app, engine, benchmark_runner, studio_services.reviews)
