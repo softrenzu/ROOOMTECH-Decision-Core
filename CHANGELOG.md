@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0 - 2026-09-19
+
+- Added independently designed ROOOMTECH Decision Studio at `/studio`
+- Added empirical calibration analysis with ECE, Brier score, reliability bins and threshold/coverage curves
+- Added target-error threshold recommendation from operator-owned held-out outcomes
+- Added privacy-conscious human-review queue backed by SQLite for single-node deployments
+- Raw review input is not retained by default; SHA-256 correlation digest is kept instead
+- Added governed decision endpoint that automatically routes low-confidence, abstained or review-required outcomes to human review
+- Added resolved-review export for operator-approved active-learning datasets when raw input retention was explicitly enabled
+- Added Studio API-key protection and review retention/purge controls
+- Wired shared realtime profile registry startup/shutdown so Redis invalidation listeners run with the API lifecycle
+- Added independent-product-development policy and stronger release/legal separation controls
+
 ## 0.7.0 - 2026-09-19
 
 - Added prevalidated realtime fast profiles for latency-sensitive workloads
