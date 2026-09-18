@@ -25,16 +25,32 @@ from app.advanced_models import (
 from app.benchmark import BenchmarkRunner
 from app.distributed import RedisDistributedMapReduce
 from app.engine import DecisionEngine
+from app.fastpath import FastPathEngine
 from app.license import LicenseError, verify_runtime_license
 from app.mapreduce import MapReduceEngine
 from app.models import BatchRequest, BatchResponse, BenchmarkRequest, BenchmarkResponse, DecisionRequest, DecisionResponse, DecisionSpec, LocalModelSummary, LocalPredictRequest, LocalPredictResponse, MultimodalDecisionResponse, TrainModelRequest, TrainModelResponse
 from app.multimodal import MediaFile, MultimodalDecisionEngine
 from app.operation_models import DetectionRequest, DetectionResponse, FeatureExtractionRequest, FeatureExtractionResponse, RankRequest, RankResponse, RouteRequest, RouteResponse, ScoreRequest, ScoreResponse, VerificationRequest, VerificationResponse
 from app.operations import OperationalDecisionEngine
+from app.performance import PerformanceBenchmarker
+from app.performance_models import (
+    FastDecisionRequest,
+    FastDecisionResponse,
+    FastProfileCreate,
+    FastProfileSummary,
+    MapReduceLoadBenchmarkRequest,
+    MapReduceLoadBenchmarkResponse,
+    RealtimeLoadBenchmarkRequest,
+    RealtimeLoadBenchmarkResponse,
+)
 from app.realtime import RealtimeDispatcher
 from app.schema_extraction import SchemaExtractor
 
-app = FastAPI(title="ROOOMTECH Decision Core", version=__version__, description="Independent multimodal decision API with schema extraction, Map/Reduce and realtime streaming.")
+app = FastAPI(
+    title="ROOOMTECH Decision Core",
+    version=__version__,
+    description="Independent multimodal decision API with low-latency profiles, schema extraction, Map/Reduce and realtime streaming.",
+)
 engine = DecisionEngine()
 benchmark_runner = BenchmarkRunner(engine.local)
 multimodal_engine = MultimodalDecisionEngine(engine)
@@ -42,13 +58,22 @@ operations_engine = OperationalDecisionEngine(engine)
 schema_extractor = SchemaExtractor(engine.model)
 mapreduce_engine = MapReduceEngine(engine, operations_engine, schema_extractor)
 distributed_mapreduce = RedisDistributedMapReduce(mapreduce_engine)
-realtime_dispatcher = RealtimeDispatcher(engine, operations_engine, schema_extractor)
+fast_path = FastPathEngine(engine, operations_engine, schema_extractor)
+performance_benchmarker = PerformanceBenchmarker(fast_path, mapreduce_engine)
+realtime_dispatcher = RealtimeDispatcher(engine, operations_engine, schema_extractor, fast_path=fast_path)
 
 
 def require_admin(x_rtdc_admin_key: str | None = Header(default=None)):
     expected = os.getenv("RTDC_ADMIN_API_KEY", "")
     if expected and (x_rtdc_admin_key is None or not hmac.compare_digest(x_rtdc_admin_key, expected)):
         raise HTTPException(status_code=401, detail="invalid or missing X-RTDC-Admin-Key")
+    return True
+
+
+def require_realtime(x_rtdc_api_key: str | None = Header(default=None)):
+    expected = os.getenv("RTDC_REALTIME_API_KEY", "")
+    if expected and (x_rtdc_api_key is None or not hmac.compare_digest(x_rtdc_api_key, expected)):
+        raise HTTPException(status_code=401, detail="invalid or missing X-RTDC-API-Key")
     return True
 
 
@@ -77,7 +102,16 @@ async def info():
         "model_provider_configured": engine.model.configured,
         "local_ml": engine.local.runtime_info(),
         "multimodal": {"image": multimodal_engine.vision.configured, "pdf": True, "audio": True},
-        "operations": ["classification", "detection", "routing", "scoring", "verification", "ranking", "search", "feature_extraction", "structured_extraction", "mapreduce", "realtime_streaming"],
+        "operations": [
+            "classification", "detection", "routing", "scoring", "verification",
+            "ranking", "search", "feature_extraction", "structured_extraction",
+            "mapreduce", "realtime_streaming", "realtime_fast_path", "performance_benchmarking",
+        ],
+        "fast_path": {
+            "profile_count": len(fast_path.list_profiles()),
+            "default_target_ms": 150,
+            "network_free_providers": ["rules", "local_classifier", "local_ngram", "heuristic"],
+        },
         "distributed_mapreduce": distributed_mapreduce.configured,
         "license": license_info,
         "raw_input_persistence": "none-by-default; distributed Redis jobs persist payloads temporarily when explicitly enabled",
@@ -149,7 +183,38 @@ async def mapreduce_status(job_id: str):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.post("/v1/realtime/stream")
+@app.post("/v1/realtime/profiles", response_model=FastProfileSummary, dependencies=[Depends(require_admin)])
+async def create_fast_profile(request: FastProfileCreate):
+    try:
+        return await fast_path.create_profile(request)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/realtime/profiles", response_model=list[FastProfileSummary], dependencies=[Depends(require_admin)])
+async def list_fast_profiles():
+    return fast_path.list_profiles()
+
+
+@app.delete("/v1/realtime/profiles/{profile_id}", dependencies=[Depends(require_admin)])
+async def delete_fast_profile(profile_id: str):
+    deleted = await fast_path.delete_profile(profile_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"fast profile not found: {profile_id}")
+    return {"deleted": True, "profile_id": profile_id}
+
+
+@app.post("/v1/realtime/fast", response_model=FastDecisionResponse, dependencies=[Depends(require_realtime)])
+async def realtime_fast(request: FastDecisionRequest):
+    try:
+        return await fast_path.execute(request)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/v1/realtime/stream", dependencies=[Depends(require_realtime)])
 async def realtime_stream(request: RealtimeBatchRequest):
     async def generate():
         async for result in realtime_dispatcher.stream_batch(request):
@@ -275,3 +340,21 @@ async def benchmark_local(request: BenchmarkRequest):
         return await asyncio.to_thread(benchmark_runner.run_local, request)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/v1/benchmarks/realtime-fast", response_model=RealtimeLoadBenchmarkResponse, dependencies=[Depends(require_admin)])
+async def benchmark_realtime_fast(request: RealtimeLoadBenchmarkRequest):
+    try:
+        return await performance_benchmarker.benchmark_realtime(request)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"realtime benchmark error: {exc}") from exc
+
+
+@app.post("/v1/benchmarks/mapreduce-load", response_model=MapReduceLoadBenchmarkResponse, dependencies=[Depends(require_admin)])
+async def benchmark_mapreduce_load(request: MapReduceLoadBenchmarkRequest):
+    try:
+        return await performance_benchmarker.benchmark_mapreduce(request)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"map/reduce benchmark error: {exc}") from exc
