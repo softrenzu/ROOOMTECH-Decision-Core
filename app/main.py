@@ -96,6 +96,7 @@ async def info():
         license_info = verify_runtime_license()
     except LicenseError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    profiles = await fast_path.list_profiles_shared()
     return {
         "product": "ROOOMTECH Decision Core",
         "version": __version__,
@@ -108,7 +109,7 @@ async def info():
             "mapreduce", "realtime_streaming", "realtime_fast_path", "performance_benchmarking",
         ],
         "fast_path": {
-            "profile_count": len(fast_path.list_profiles()),
+            "profile_count": len(profiles),
             "default_target_ms": 150,
             "network_free_providers": ["rules", "local_classifier", "local_ngram", "heuristic"],
             "scheduler": fast_path.runtime_info(),
@@ -196,7 +197,7 @@ async def create_fast_profile(request: FastProfileCreate):
 
 @app.get("/v1/realtime/profiles", response_model=list[FastProfileSummary], dependencies=[Depends(require_admin)])
 async def list_fast_profiles():
-    return fast_path.list_profiles()
+    return await fast_path.list_profiles_shared()
 
 
 @app.delete("/v1/realtime/profiles/{profile_id}", dependencies=[Depends(require_admin)])
