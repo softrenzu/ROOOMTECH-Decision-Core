@@ -65,6 +65,7 @@ def test_rag_citation_support_and_context_injection(guardrails):
         )
     )
     assert good.claim_findings[0].status == "pass"
+    assert good.requires_review is False
 
     unsafe = guardrails.verify_rag(
         RagVerificationRequest(
@@ -75,3 +76,17 @@ def test_rag_citation_support_and_context_injection(guardrails):
     )
     assert unsafe.context_injection_detected is True
     assert unsafe.passed is False
+    assert unsafe.requires_review is True
+
+
+def test_unsupported_rag_claim_routes_to_review_without_injection(guardrails):
+    result = guardrails.verify_rag(
+        RagVerificationRequest(
+            answer="The building was completed in 2024.",
+            passages=[RagPassage(id="p1", text="The property has two bedrooms and one bathroom.")],
+            claims=[RagClaim(id="c1", claim="The building was completed in 2024.", citation_ids=["p1"])],
+        )
+    )
+    assert result.claim_findings[0].status == "fail"
+    assert result.passed is False
+    assert result.requires_review is True
