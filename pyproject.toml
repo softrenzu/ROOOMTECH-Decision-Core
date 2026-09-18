@@ -1,6 +1,6 @@
 [project]
 name = "rooomtech-decision-core"
-version = "0.7.0"
+version = "0.8.0"
 description = "Independent multimodal decision API with low-latency profiles, structured extraction, Map/Reduce and realtime streaming"
 requires-python = ">=3.11"
 dependencies = [
