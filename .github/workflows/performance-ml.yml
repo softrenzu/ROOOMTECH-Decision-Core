@@ -6,7 +6,8 @@ on:
     paths:
       - ".github/workflows/performance-ml.yml"
       - "app/fastpath.py"
-      - "app/ml/local_classifier.py"
+      - "app/engine.py"
+      - "app/ml/**"
       - "benchmarks/websocket_realtime_load.py"
 
 jobs:
@@ -49,7 +50,7 @@ jobs:
               profile.raise_for_status()
               print(json.dumps({"training": trained, "profile": profile.json()}, ensure_ascii=False, indent=2))
           PY
-      - name: Measure local-classifier WebSocket fast path
+      - name: Measure local-classifier WebSocket fast path at 32 connections
         run: |
           python benchmarks/websocket_realtime_load.py \
             --ws-url ws://127.0.0.1:8000/v1/realtime/ws \
@@ -58,6 +59,15 @@ jobs:
             --requests 5000 \
             --connections 32 \
             | tee local-classifier-ws.json
+      - name: Measure local-classifier WebSocket fast path at 64 connections
+        run: |
+          python benchmarks/websocket_realtime_load.py \
+            --ws-url ws://127.0.0.1:8000/v1/realtime/ws \
+            --profile-id perf-local-route \
+            --input 'ログインできなくてパスワードも忘れました' \
+            --requests 5000 \
+            --connections 64 \
+            | tee local-classifier-ws-64.json
       - name: Measure local-classifier in-process burst
         run: |
           python - <<'PY' | tee local-classifier-inprocess.json
@@ -71,11 +81,15 @@ jobs:
         run: |
           python - <<'PY'
           import json
-          ws = json.load(open("local-classifier-ws.json"))
-          assert ws["errors"] == 0, ws
-          assert ws["server_target_hit_rate"] >= 0.999, ws
-          assert ws["roundtrip_p95_ms"] < 150, ws
-          assert ws["server_p95_ms"] < 150, ws
+          ws32 = json.load(open("local-classifier-ws.json"))
+          ws64 = json.load(open("local-classifier-ws-64.json"))
+          assert ws32["errors"] == 0, ws32
+          assert ws32["server_target_hit_rate"] >= 0.999, ws32
+          assert ws32["roundtrip_p95_ms"] < 150, ws32
+          assert ws32["server_p95_ms"] < 150, ws32
+          assert ws64["errors"] == 0, ws64
+          assert ws64["server_target_hit_rate"] >= 0.999, ws64
+          assert ws64["roundtrip_p95_ms"] < 150, ws64
           print("local classifier realtime gates passed")
           PY
       - name: Upload measured results
@@ -85,4 +99,5 @@ jobs:
           path: |
             local-profile.json
             local-classifier-ws.json
+            local-classifier-ws-64.json
             local-classifier-inprocess.json
