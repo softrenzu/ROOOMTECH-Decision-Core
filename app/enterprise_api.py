@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import os
 import time
@@ -10,6 +11,8 @@ from fastapi.responses import JSONResponse
 
 from app.enterprise_models import (
     AuditEvent,
+    DeployedPredictRequest,
+    DeployedPredictResponse,
     ModelDeploymentSummary,
     ModelPromotionRequest,
     ModelRollbackRequest,
@@ -102,9 +105,7 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
             status_code = response.status_code
             response.headers["X-RTDC-Project-ID"] = auth.project_id
             response.headers["X-Request-ID"] = request_id
-            response.headers["X-RTDC-Quota-Remaining"] = str(
-                max(0, auth.request_quota_per_day - auth.requests_today)
-            )
+            response.headers["X-RTDC-Quota-Remaining"] = str(max(0, auth.request_quota_per_day - auth.requests_today))
             return response
         finally:
             services.store.audit(
@@ -190,13 +191,8 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
     @admin.post("/projects/{project_id}/models/rollback", response_model=ModelRollbackResponse)
     async def rollback_model(project_id: str, request: ModelRollbackRequest):
         try:
-            deployment, old_model = services.store.rollback_model(
-                project_id, request.decision_id, request.environment, None
-            )
-            return ModelRollbackResponse(
-                deployment=deployment,
-                rolled_back_from_model_id=old_model,
-            )
+            deployment, old_model = services.store.rollback_model(project_id, request.decision_id, request.environment, None)
+            return ModelRollbackResponse(deployment=deployment, rolled_back_from_model_id=old_model)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -204,19 +200,66 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
 
     project = APIRouter(prefix="/v1/project")
 
-    def project_auth(
-        x_rtdc_project_key: str | None = Header(default=None),
-    ):
+    def project_auth(x_rtdc_project_key: str | None = Header(default=None)):
         try:
-            return services.store.authenticate(
-                x_rtdc_project_key or "", required_scope=None, consume_quota=False
-            )
+            return services.store.authenticate(x_rtdc_project_key or "", required_scope=None, consume_quota=False)
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    def project_inference_auth(x_rtdc_project_key: str | None = Header(default=None)):
+        try:
+            return services.store.authenticate(x_rtdc_project_key or "", required_scope="inference", consume_quota=True)
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except OverflowError as exc:
+            raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "86400"}) from exc
 
     @project.get("/deployments", response_model=list[ModelDeploymentSummary])
     async def project_deployments(auth=Depends(project_auth)):
         return services.store.list_deployments(auth.project_id)
+
+    @project.post("/predict", response_model=DeployedPredictResponse)
+    async def project_deployed_predict(payload: DeployedPredictRequest, request: Request, auth=Depends(project_inference_auth)):
+        request_id = request.headers.get("x-request-id") or "req_" + uuid.uuid4().hex[:20]
+        started = time.perf_counter()
+        status_code = 500
+        try:
+            deployment = services.store.get_deployment(auth.project_id, payload.decision_id, payload.environment)
+            services.validate_model_for_decision(deployment.model_id, payload.decision_id)
+            device, predictions = await asyncio.to_thread(
+                services.local.predict_many,
+                deployment.model_id,
+                [payload.input],
+                payload.device,
+            )
+            status_code = 200
+            return DeployedPredictResponse(
+                project_id=auth.project_id,
+                decision_id=payload.decision_id,
+                environment=payload.environment,
+                deployment_version=deployment.version,
+                model_id=deployment.model_id,
+                device=device,
+                prediction=predictions[0],
+                latency_ms=round((time.perf_counter() - started) * 1000.0, 3),
+                quota_remaining_today=max(0, auth.request_quota_per_day - auth.requests_today),
+            )
+        except FileNotFoundError as exc:
+            status_code = 404
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            status_code = 502
+            raise HTTPException(status_code=502, detail=f"deployed model inference error: {exc}") from exc
+        finally:
+            services.store.audit(
+                project_id=auth.project_id,
+                key_id=auth.key_id,
+                method="POST",
+                path="/v1/project/predict",
+                status_code=status_code,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+                request_id=request_id,
+            )
 
     app.include_router(project)
 
