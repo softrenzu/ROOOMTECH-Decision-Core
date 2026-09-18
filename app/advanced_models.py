@@ -93,7 +93,7 @@ class MapReduceJobStatus(BaseModel):
 
 class RealtimeEvent(BaseModel):
     request_id: str = Field(default_factory=lambda: uuid.uuid4().hex, min_length=1, max_length=100)
-    kind: Literal["ping", "decide", "detect", "route", "score", "verify", "features", "extract"]
+    kind: Literal["ping", "decide", "detect", "route", "score", "verify", "features", "extract", "fast"]
     request: dict[str, Any] = Field(default_factory=dict)
 
 
