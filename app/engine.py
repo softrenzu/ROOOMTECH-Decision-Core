@@ -67,17 +67,28 @@ class DecisionEngine:
         model_called = False
 
         if request.provider in {"auto", "local_classifier"}:
-            for spec in request.decisions:
-                if not spec.model_id:
-                    if request.provider == "local_classifier":
-                        raise ValueError(f"decision {spec.id} requires model_id for local_classifier provider")
-                    continue
+            local_specs = [spec for spec in request.decisions if spec.model_id]
+            if request.provider == "local_classifier":
+                missing = [spec.id for spec in request.decisions if not spec.model_id]
+                if missing:
+                    raise ValueError(f"decision {missing[0]} requires model_id for local_classifier provider")
+
+            async def evaluate_local(spec: DecisionSpec):
                 try:
-                    local_data[spec.id] = self.local.evaluate_one(spec.model_id, request.input, spec.choices)
+                    return spec.id, await self.local.evaluate_one_async(spec.model_id, request.input, spec.choices), None
                 except Exception as exc:
-                    if request.provider == "local_classifier":
-                        raise
-                    local_errors[spec.id] = type(exc).__name__
+                    return spec.id, None, exc
+
+            if local_specs:
+                import asyncio
+                local_rows = await asyncio.gather(*(evaluate_local(spec) for spec in local_specs))
+                for spec_id, data, error in local_rows:
+                    if error is None:
+                        local_data[spec_id] = data
+                    elif request.provider == "local_classifier":
+                        raise error
+                    else:
+                        local_errors[spec_id] = type(error).__name__
 
         if request.provider == "openai_compatible":
             model_data = await self.model.evaluate(request.input, request.decisions)
