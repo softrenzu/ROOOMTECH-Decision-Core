@@ -5,6 +5,11 @@ on:
   push:
     paths:
       - ".github/workflows/performance-smoke.yml"
+      - "app/fastpath.py"
+      - "app/performance.py"
+      - "app/realtime.py"
+      - "benchmarks/http_realtime_load.py"
+      - "benchmarks/websocket_realtime_load.py"
 
 jobs:
   measure:
@@ -78,6 +83,24 @@ jobs:
           response = httpx.post("http://127.0.0.1:8000/v1/benchmarks/mapreduce-load", json=payload, timeout=120.0)
           response.raise_for_status()
           print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+          PY
+      - name: Enforce regression gates
+        run: |
+          python - <<'PY'
+          import json
+          http = json.load(open("realtime-http.json"))
+          ws = json.load(open("realtime-ws.json"))
+          mr = json.load(open("mapreduce-load.json"))
+          assert http["errors"] == 0, http
+          assert http["server_target_hit_rate"] >= 0.999, http
+          assert http["roundtrip_p95_ms"] < 250, http
+          assert ws["errors"] == 0, ws
+          assert ws["server_target_hit_rate"] >= 0.999, ws
+          assert ws["roundtrip_p95_ms"] < 150, ws
+          assert ws["server_p95_ms"] < 150, ws
+          assert mr["total_failed"] == 0, mr
+          assert mr["latency"]["throughput_per_second"] > 10000, mr
+          print("performance gates passed")
           PY
       - name: Upload measured results
         uses: actions/upload-artifact@v4
