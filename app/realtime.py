@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 from app.advanced_models import RealtimeBatchRequest, RealtimeEvent, RealtimeResult, SchemaExtractionRequest
 from app.models import DecisionRequest
 from app.operation_models import DetectionRequest, FeatureExtractionRequest, RouteRequest, ScoreRequest, VerificationRequest
+from app.performance_models import FastDecisionRequest
 
 
 def _dump(value: Any) -> Any:
@@ -14,10 +15,11 @@ def _dump(value: Any) -> Any:
 
 
 class RealtimeDispatcher:
-    def __init__(self, decision_engine, operations_engine, schema_extractor):
+    def __init__(self, decision_engine, operations_engine, schema_extractor, fast_path=None):
         self.decision_engine = decision_engine
         self.operations_engine = operations_engine
         self.schema_extractor = schema_extractor
+        self.fast_path = fast_path
 
     async def dispatch(self, event: RealtimeEvent) -> RealtimeResult:
         started = time.perf_counter()
@@ -38,6 +40,10 @@ class RealtimeDispatcher:
                 data = _dump(await self.operations_engine.extract_features(FeatureExtractionRequest.model_validate(event.request)))
             elif event.kind == "extract":
                 data = _dump(await self.schema_extractor.extract(SchemaExtractionRequest.model_validate(event.request)))
+            elif event.kind == "fast":
+                if self.fast_path is None:
+                    raise RuntimeError("realtime fast path is not configured")
+                data = _dump(await self.fast_path.execute(FastDecisionRequest.model_validate(event.request)))
             else:
                 raise ValueError(f"unsupported realtime event: {event.kind}")
             return RealtimeResult(
