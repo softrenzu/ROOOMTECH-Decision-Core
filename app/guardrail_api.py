@@ -15,12 +15,17 @@ from app.guardrail_models import (
 from app.guardrails import GuardrailEngine
 
 
+def _enterprise_project_auth_enabled() -> bool:
+    return os.getenv("RTDC_ENTERPRISE_ENFORCE_PROJECT_KEYS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _require_guardrail(x_rtdc_guardrail_key: str | None = Header(default=None)) -> bool:
-    expected = (
-        os.getenv("RTDC_GUARDRAIL_API_KEY", "").strip()
-        or os.getenv("RTDC_REALTIME_API_KEY", "").strip()
-        or os.getenv("RTDC_ADMIN_API_KEY", "").strip()
-    )
+    explicit = os.getenv("RTDC_GUARDRAIL_API_KEY", "").strip()
+    if _enterprise_project_auth_enabled() and not explicit:
+        # Enterprise middleware authenticates X-RTDC-Project-Key and enforces the guardrails scope.
+        # An explicit dedicated guardrail key can still be configured for defense in depth.
+        return True
+    expected = explicit or os.getenv("RTDC_REALTIME_API_KEY", "").strip() or os.getenv("RTDC_ADMIN_API_KEY", "").strip()
     if expected and (x_rtdc_guardrail_key is None or not hmac.compare_digest(x_rtdc_guardrail_key, expected)):
         raise HTTPException(status_code=401, detail="invalid or missing X-RTDC-Guardrail-Key")
     return True
