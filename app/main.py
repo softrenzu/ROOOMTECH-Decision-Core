@@ -4,6 +4,8 @@ import asyncio
 import hmac
 import json
 import os
+import time
+import uuid
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -45,6 +47,7 @@ from app.performance_models import (
 )
 from app.realtime import RealtimeDispatcher
 from app.schema_extraction import SchemaExtractor
+from app.tenant_context import reset_tenant_context, set_tenant_context
 
 app = FastAPI(
     title="ROOOMTECH Decision Core",
@@ -63,14 +66,22 @@ performance_benchmarker = PerformanceBenchmarker(fast_path, mapreduce_engine)
 realtime_dispatcher = RealtimeDispatcher(engine, operations_engine, schema_extractor, fast_path=fast_path)
 
 
+def _enterprise_enforced() -> bool:
+    return os.getenv("RTDC_ENTERPRISE_ENFORCE_PROJECT_KEYS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def require_admin(x_rtdc_admin_key: str | None = Header(default=None)):
     expected = os.getenv("RTDC_ADMIN_API_KEY", "")
+    if _enterprise_enforced() and not expected.strip():
+        raise HTTPException(status_code=503, detail="RTDC_ADMIN_API_KEY must be configured in enterprise mode")
     if expected and (x_rtdc_admin_key is None or not hmac.compare_digest(x_rtdc_admin_key, expected)):
         raise HTTPException(status_code=401, detail="invalid or missing X-RTDC-Admin-Key")
     return True
 
 
 def require_realtime(x_rtdc_api_key: str | None = Header(default=None)):
+    if _enterprise_enforced():
+        return True
     expected = os.getenv("RTDC_REALTIME_API_KEY", "")
     if expected and (x_rtdc_api_key is None or not hmac.compare_digest(x_rtdc_api_key, expected)):
         raise HTTPException(status_code=401, detail="invalid or missing X-RTDC-API-Key")
@@ -109,12 +120,18 @@ async def info():
             "mapreduce", "realtime_streaming", "realtime_fast_path", "performance_benchmarking",
             "governed_datasets", "active_learning", "guardrail_gateway", "tool_call_gate", "rag_verification",
             "enterprise_projects", "scoped_api_keys", "daily_quotas", "audit_log", "model_promotion_rollback",
+            "tenant_resource_isolation", "project_websocket_auth",
         ],
         "fast_path": {
             "profile_count": len(profiles),
             "default_target_ms": 150,
             "network_free_providers": ["rules", "local_classifier", "local_ngram", "heuristic"],
             "scheduler": fast_path.runtime_info(),
+        },
+        "tenant_isolation": {
+            "project_resource_types": ["dataset", "review", "model"],
+            "cross_project_lookup": "not-found",
+            "websocket_project_auth": _enterprise_enforced(),
         },
         "distributed_mapreduce": distributed_mapreduce.configured,
         "license": license_info,
@@ -232,11 +249,28 @@ async def realtime_stream(request: RealtimeBatchRequest):
 
 @app.websocket("/v1/realtime/ws")
 async def realtime_ws(websocket: WebSocket):
-    expected = os.getenv("RTDC_REALTIME_API_KEY", "")
-    supplied = websocket.headers.get("x-rtdc-api-key", "")
-    if expected and not hmac.compare_digest(expected, supplied):
-        await websocket.close(code=4401)
-        return
+    enterprise_mode = _enterprise_enforced()
+    project_token = websocket.headers.get("x-rtdc-project-key", "")
+    initial_auth = None
+
+    if enterprise_mode:
+        if getattr(enterprise_services, "resource_registry", None) is None:
+            await websocket.close(code=1011)
+            return
+        try:
+            initial_auth = enterprise_services.store.authenticate(
+                project_token, required_scope="realtime", consume_quota=False
+            )
+        except (PermissionError, OverflowError):
+            await websocket.close(code=4401)
+            return
+    else:
+        expected = os.getenv("RTDC_REALTIME_API_KEY", "")
+        supplied = websocket.headers.get("x-rtdc-api-key", "")
+        if expected and not hmac.compare_digest(expected, supplied):
+            await websocket.close(code=4401)
+            return
+
     await websocket.accept()
     max_bytes = int(os.getenv("RTDC_WS_MAX_MESSAGE_BYTES", "1048576"))
     try:
@@ -245,12 +279,60 @@ async def realtime_ws(websocket: WebSocket):
             if len(raw.encode("utf-8")) > max_bytes:
                 await websocket.close(code=1009)
                 return
+
+            started = time.perf_counter()
+            request_id = "ws_" + uuid.uuid4().hex[:20]
+            auth = initial_auth
+            tenant_token = None
+            status_code = 500
+            if enterprise_mode:
+                try:
+                    auth = enterprise_services.store.authenticate(
+                        project_token, required_scope="realtime", consume_quota=True
+                    )
+                except PermissionError as exc:
+                    await websocket.send_json({"ok": False, "error": str(exc)})
+                    await websocket.close(code=4401)
+                    return
+                except OverflowError as exc:
+                    if initial_auth is not None:
+                        enterprise_services.store.audit(
+                            project_id=initial_auth.project_id,
+                            key_id=initial_auth.key_id,
+                            method="WS",
+                            path="/v1/realtime/ws",
+                            status_code=429,
+                            latency_ms=(time.perf_counter() - started) * 1000.0,
+                            request_id=request_id,
+                        )
+                    await websocket.send_json({"ok": False, "error": str(exc)})
+                    await websocket.close(code=4429)
+                    return
+                tenant_token = set_tenant_context(
+                    auth.project_id, enterprise_services.resource_registry
+                )
+
             try:
                 event = RealtimeEvent.model_validate_json(raw)
                 result = await realtime_dispatcher.dispatch(event)
                 await websocket.send_text(result.model_dump_json())
+                status_code = 200
             except Exception as exc:
+                status_code = 400
                 await websocket.send_json({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                if tenant_token is not None:
+                    reset_tenant_context(tenant_token)
+                if enterprise_mode and auth is not None:
+                    enterprise_services.store.audit(
+                        project_id=auth.project_id,
+                        key_id=auth.key_id,
+                        method="WS",
+                        path="/v1/realtime/ws",
+                        status_code=status_code,
+                        latency_ms=(time.perf_counter() - started) * 1000.0,
+                        request_id=request_id,
+                    )
     except WebSocketDisconnect:
         return
 
@@ -372,8 +454,16 @@ from app.studio_api import install_studio
 from app.dataset_api import install_dataset_api
 from app.guardrail_api import install_guardrail_api
 from app.enterprise_api import install_enterprise_api
+from app.tenant_api import install_tenant_resource_api
 
 studio_services = install_studio(app, engine, fast_path)
 dataset_services = install_dataset_api(app, engine, benchmark_runner, studio_services.reviews)
 guardrail_engine = install_guardrail_api(app, operations_engine)
 enterprise_services = install_enterprise_api(app, engine.local)
+tenant_resource_services = install_tenant_resource_api(
+    app,
+    enterprise_services,
+    dataset_services,
+    studio_services.reviews,
+    engine.local,
+)
