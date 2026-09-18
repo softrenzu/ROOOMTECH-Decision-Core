@@ -25,7 +25,7 @@ from app.advanced_models import (
 from app.benchmark import BenchmarkRunner
 from app.distributed import RedisDistributedMapReduce
 from app.engine import DecisionEngine
-from app.fastpath import FastPathEngine
+from app.fastpath import FastPathEngine, FastPathOverloaded
 from app.license import LicenseError, verify_runtime_license
 from app.mapreduce import MapReduceEngine
 from app.models import BatchRequest, BatchResponse, BenchmarkRequest, BenchmarkResponse, DecisionRequest, DecisionResponse, DecisionSpec, LocalModelSummary, LocalPredictRequest, LocalPredictResponse, MultimodalDecisionResponse, TrainModelRequest, TrainModelResponse
@@ -111,6 +111,7 @@ async def info():
             "profile_count": len(fast_path.list_profiles()),
             "default_target_ms": 150,
             "network_free_providers": ["rules", "local_classifier", "local_ngram", "heuristic"],
+            "scheduler": fast_path.runtime_info(),
         },
         "distributed_mapreduce": distributed_mapreduce.configured,
         "license": license_info,
@@ -210,8 +211,12 @@ async def delete_fast_profile(profile_id: str):
 async def realtime_fast(request: FastDecisionRequest):
     try:
         return await fast_path.execute(request)
+    except FastPathOverloaded as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "1"}) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/v1/realtime/stream", dependencies=[Depends(require_realtime)])
