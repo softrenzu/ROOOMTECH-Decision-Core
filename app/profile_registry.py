@@ -17,14 +17,18 @@ class SharedFastProfileRegistry:
 
     def __init__(self):
         self.url = os.getenv("RTDC_REDIS_URL", "").strip()
+        enabled = os.getenv("RTDC_FAST_PROFILE_REDIS_ENABLED", "false").strip().lower()
+        self.enabled = enabled in {"1", "true", "yes", "on"}
         self.key = os.getenv("RTDC_FAST_PROFILE_REDIS_KEY", "rtdc:fast:profiles").strip() or "rtdc:fast:profiles"
 
     @property
     def configured(self) -> bool:
-        return bool(self.url)
+        return self.enabled and bool(self.url)
 
     def _redis(self):
-        if not self.configured:
+        if not self.enabled:
+            raise RuntimeError("RTDC_FAST_PROFILE_REDIS_ENABLED is not enabled")
+        if not self.url:
             raise RuntimeError("RTDC_REDIS_URL is not configured")
         try:
             import redis.asyncio as redis
@@ -52,15 +56,19 @@ class SharedFastProfileRegistry:
         if not self.configured:
             return
         client = self._redis()
-        await client.hset(self.key, summary.profile_id, self._payload(spec, summary))
-        await client.aclose()
+        try:
+            await client.hset(self.key, summary.profile_id, self._payload(spec, summary))
+        finally:
+            await client.aclose()
 
     async def get(self, profile_id: str) -> tuple[FastProfileCreate, FastProfileSummary] | None:
         if not self.configured:
             return None
         client = self._redis()
-        raw = await client.hget(self.key, profile_id)
-        await client.aclose()
+        try:
+            raw = await client.hget(self.key, profile_id)
+        finally:
+            await client.aclose()
         if not raw:
             return None
         return self._decode(raw)
@@ -69,8 +77,10 @@ class SharedFastProfileRegistry:
         if not self.configured:
             return []
         client = self._redis()
-        rows = await client.hvals(self.key)
-        await client.aclose()
+        try:
+            rows = await client.hvals(self.key)
+        finally:
+            await client.aclose()
         values: list[tuple[FastProfileCreate, FastProfileSummary]] = []
         for raw in rows:
             try:
@@ -83,6 +93,7 @@ class SharedFastProfileRegistry:
         if not self.configured:
             return False
         client = self._redis()
-        deleted = bool(await client.hdel(self.key, profile_id))
-        await client.aclose()
-        return deleted
+        try:
+            return bool(await client.hdel(self.key, profile_id))
+        finally:
+            await client.aclose()
