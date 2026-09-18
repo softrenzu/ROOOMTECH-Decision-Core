@@ -1,0 +1,19 @@
+{
+  "input": "{{#sys.query#}}",
+  "provider": "auto",
+  "decisions": [
+    {
+      "id": "intent",
+      "question": "Classify the main customer intent",
+      "choices": ["question", "complaint", "change_request", "emergency", "other"],
+      "min_confidence": 0.78,
+      "min_margin": 0.12,
+      "max_entropy": 0.80,
+      "keywords": {
+        "complaint": ["complaint", "refund", "angry"],
+        "emergency": ["fire", "gas smell", "locked out", "injured"],
+        "change_request": ["change", "cancel", "reschedule"]
+      }
+    }
+  ]
+}
