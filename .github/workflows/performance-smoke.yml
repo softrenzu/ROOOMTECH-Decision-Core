@@ -41,6 +41,15 @@ jobs:
             --requests 5000 \
             --concurrency 64 \
             | tee realtime-http.json
+      - name: Measure WebSocket realtime fast path
+        run: |
+          python benchmarks/websocket_realtime_load.py \
+            --ws-url ws://127.0.0.1:8000/v1/realtime/ws \
+            --profile-id perf-route \
+            --input 'ログインできません。パスワードを変更したいです' \
+            --requests 5000 \
+            --connections 32 \
+            | tee realtime-ws.json
       - name: Measure 10k-item MapReduce
         run: |
           python - <<'PY' | tee mapreduce-load.json
@@ -77,4 +86,5 @@ jobs:
           path: |
             fast-profile.json
             realtime-http.json
+            realtime-ws.json
             mapreduce-load.json
