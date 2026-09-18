@@ -15,7 +15,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
-      - run: pip install -e '.[ml,dev]'
+      - name: Install CPU PyTorch and project
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[dev]'
       - name: Start API
         run: |
           uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/rtdc-uvicorn.log 2>&1 &
