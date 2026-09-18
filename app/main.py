@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException
 from app import __version__
 from app.engine import DecisionEngine
@@ -53,6 +57,5 @@ async def decide(request: DecisionRequest):
 
 @app.post("/v1/decide/batch", response_model=BatchResponse)
 async def decide_batch(request: BatchRequest):
-    # Concurrency is bounded by the request schema (100 items max); deployers can add gateway limits as needed.
     items = await asyncio.gather(*(engine.decide(item) for item in request.items))
     return BatchResponse(items=items)
