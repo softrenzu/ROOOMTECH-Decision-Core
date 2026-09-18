@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.models import LocalPrediction
+
 
 ID_PATTERN = r"^[A-Za-z0-9_.-]+$"
 ProjectScope = Literal["inference", "guardrails", "realtime", "datasets", "reviews", "models"]
@@ -106,3 +108,22 @@ class ModelRollbackRequest(BaseModel):
 class ModelRollbackResponse(BaseModel):
     deployment: ModelDeploymentSummary
     rolled_back_from_model_id: str
+
+
+class DeployedPredictRequest(BaseModel):
+    decision_id: str = Field(min_length=1, max_length=80, pattern=ID_PATTERN)
+    input: str = Field(min_length=1, max_length=100_000)
+    environment: DeploymentEnvironment = "production"
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+
+
+class DeployedPredictResponse(BaseModel):
+    project_id: str
+    decision_id: str
+    environment: DeploymentEnvironment
+    deployment_version: int
+    model_id: str
+    device: str
+    prediction: LocalPrediction
+    latency_ms: float
+    quota_remaining_today: int
