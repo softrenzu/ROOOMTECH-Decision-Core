@@ -2,7 +2,7 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision platform for typed, probabilistic, machine-usable decisions.
 
-Version 0.11 adds a policy-oriented Guardrail Gateway, pre-execution Tool Call Gate, and local RAG citation/context screening on top of governed datasets, active learning, calibration and human review. Guardrail results are decision-support signals, not security, compliance, or factuality guarantees. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
+Version 0.12 adds a reference enterprise control plane with projects, scoped API keys, daily quotas, metadata-only audit trails, and local-model promotion/rollback. It builds on the Guardrail Gateway, governed datasets, active learning, calibration and human review. Guardrail results are decision-support signals, not security, compliance, or factuality guarantees. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
 
 ## Main capabilities
 
@@ -32,6 +32,8 @@ Version 0.11 adds a policy-oriented Guardrail Gateway, pre-execution Tool Call G
 - Guardrail Gateway for input/output/tool-call policy screening
 - Tool Call Gate with allowlists, blocklists, policy checks and explicit authorization for risky actions
 - RAG citation/context screening with claim-level pass/review/fail and context injection checks
+- Enterprise projects, scoped API keys, daily quotas and metadata-only audit logging
+- Project model-promotion records and rollback history
 - Personal-use-free / business-use-paid licensing
 
 ## Decision Studio
@@ -52,6 +54,41 @@ http://localhost:8000/datasets
 
 Set `RTDC_STUDIO_API_KEY` in `.env` for protected deployments. When it is blank, `RTDC_ADMIN_API_KEY` is used as the fallback.
 
+## Enterprise control plane
+
+The enterprise reference control plane is disabled by default. Enable project-key enforcement with:
+
+```bash
+RTDC_ADMIN_API_KEY=<admin-secret>
+RTDC_ENTERPRISE_ENFORCE_PROJECT_KEYS=true
+RTDC_ENTERPRISE_KEY_PEPPER=<stable-secret-pepper>
+```
+
+Administrative APIs:
+
+```text
+POST  /v1/admin/projects
+GET   /v1/admin/projects
+GET   /v1/admin/projects/{project_id}
+PATCH /v1/admin/projects/{project_id}
+POST  /v1/admin/projects/{project_id}/keys
+GET   /v1/admin/projects/{project_id}/keys
+DELETE /v1/admin/projects/{project_id}/keys/{key_id}
+GET   /v1/admin/audit
+POST  /v1/admin/projects/{project_id}/models/promote
+GET   /v1/admin/projects/{project_id}/models
+POST  /v1/admin/projects/{project_id}/models/rollback
+GET   /v1/project/deployments
+```
+
+Project keys are high-entropy credentials returned only once. The local control-plane database stores only a digest; an optional HMAC pepper can be configured separately. When enforcement is enabled, ordinary HTTP inference routes require `X-RTDC-Project-Key` with an appropriate `inference`, `guardrails`, or `realtime` scope. Daily project quotas return HTTP 429 after exhaustion.
+
+Authenticated project inference requests create audit metadata containing project/key IDs, method, path, status, latency and request ID. Request bodies, prompts and outputs are deliberately not copied into the audit table.
+
+Model promotion records an active local model for a project, decision ID and environment, validates the model's decision ID, keeps version history, and supports rollback. Existing inference APIs still accept explicit model IDs; v0.12 deployment records do not automatically rewrite every inference request to the active alias.
+
+Important isolation boundary: v0.12 project credentials, quota, audit and deployment records do **not** yet physically partition the existing dataset, review and model stores. Do not market v0.12 as hard SaaS tenant isolation. See `docs/ENTERPRISE_CONTROL_PLANE.md`.
+
 ## Guardrail Gateway
 
 ```text
@@ -66,7 +103,7 @@ POST /v1/guardrails/rag
 
 `/v1/guardrails/rag` checks each explicit claim against only its cited passages using a fast local lexical-support signal and checks retrieved context for prompt-injection-like patterns. Any non-pass claim or detected context injection is routed to review. Lexical support is a first-pass screening signal and does not prove entailment, factual correctness, absence of contradiction or source authority.
 
-Set `RTDC_GUARDRAIL_API_KEY` to protect these endpoints. If it is blank, the gateway falls back to `RTDC_REALTIME_API_KEY`, then `RTDC_ADMIN_API_KEY`. The guardrail module does not persist submitted input, output, citations or tool arguments by default.
+Set `RTDC_GUARDRAIL_API_KEY` to protect these endpoints outside enterprise project-key mode. Under enterprise enforcement, a blank dedicated guardrail key lets the project `guardrails` scope provide the primary gateway credential; an explicit dedicated guardrail key can still be configured for defense in depth. The guardrail module does not persist submitted input, output, citations or tool arguments by default.
 
 See `docs/GUARDRAILS.md`.
 
@@ -144,7 +181,7 @@ POST /v1/reviews/purge-expired
 GET  /v1/reviews/export/training-examples
 ```
 
-The built-in SQLite review and dataset stores are intended for local, evaluation and single-node deployments. Enterprise/multi-node deployments should use approved managed storage with organizational access controls, encryption, backups, audit logging and retention enforcement.
+The built-in SQLite review, dataset and enterprise stores are intended for local, evaluation and single-node deployments. Enterprise/multi-node deployments should use approved managed storage with organizational access controls, encryption, backups, audit logging and retention enforcement.
 
 ## Fast realtime path
 
@@ -249,8 +286,8 @@ Natural-person personal, non-business use is available under `LICENSE_PERSONAL.m
 
 This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data, copied UI assets or copied product documentation, and it is not marketed as a clone or official compatible implementation of another vendor's product.
 
-Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`; guardrail-specific boundaries and limitations are in `docs/GUARDRAILS.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
+Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`; guardrail-specific boundaries and limitations are in `docs/GUARDRAILS.md`; enterprise control-plane boundaries are in `docs/ENTERPRISE_CONTROL_PLANE.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
 
 ## Version
 
-`0.11.0`
+`0.12.0`
