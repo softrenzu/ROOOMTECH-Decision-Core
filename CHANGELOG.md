@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.13.0 - 2026-09-19
+
+- Added a project resource-ownership registry for persisted datasets, human-review items and local models
+- A dataset, review or model resource ID can belong to only one enterprise project
+- Added project-scoped dataset CRUD, examples, held-out training/evaluation lineage and same-project review import APIs
+- Added project-scoped Human Review Queue, active-learning candidate and training-example export APIs
+- Added project-scoped model listing, inspection and direct prediction APIs
+- Dataset training automatically registers the resulting model to the dataset owner's project
+- Cross-project resource lookups return not-found rather than exposing the owner
+- General local-classifier decisions inherit authenticated tenant context so explicit model IDs cannot cross the project boundary
+- Administrative model promotion now claims or confirms model ownership and rejects models owned by another project
+- Added project-key authentication to the realtime WebSocket path in enterprise mode
+- WebSocket keys are revalidated per message so quota, revocation, expiry and project disablement apply to long-lived connections
+- Added per-message metadata-only WebSocket audit records and tenant context during dispatch
+- Enterprise management APIs now fail closed when required admin/studio secrets are not configured
+- Added tenant-boundary tests covering datasets, reviews and model prediction
+- Added `docs/TENANT_ISOLATION.md` and updated enterprise-control-plane documentation
+- Clarified that v0.13 is an application authorization boundary; the reference SQLite stores are shared and production SaaS should add storage-layer tenant controls
+
 ## 0.12.0 - 2026-09-19
 
 - Added reference enterprise projects with enable/disable state and configurable daily request quotas
