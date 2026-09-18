@@ -26,6 +26,7 @@ from app.performance_models import (
     FastProfileCreate,
     FastProfileSummary,
 )
+from app.profile_registry import SharedFastProfileRegistry
 
 
 def _jsonable(value: Any) -> Any:
@@ -55,14 +56,16 @@ class FastPathEngine:
 
     The fast path uses bounded concurrent worker slots. Requests above the configured
     pending capacity are rejected instead of allowing an unbounded latency queue. Local
-    classifier inference is micro-batched by LocalClassifierProvider, including a
-    serialized GPU inference gate when CUDA is used.
+    classifier inference uses accelerator-aware scheduling. When the optional Redis
+    profile registry is enabled, multiple server processes can share profile definitions
+    while keeping compiled profiles and inference on the local hot path.
     """
 
     def __init__(self, decision_engine, operations_engine, schema_extractor):
         self.decision_engine = decision_engine
         self.operations_engine = operations_engine
         self.schema_extractor = schema_extractor
+        self.registry = SharedFastProfileRegistry()
         self.profile_limit = max(1, int(os.getenv("RTDC_FAST_PROFILE_LIMIT", "1000")))
         self.worker_slots = max(1, int(os.getenv("RTDC_FAST_WORKERS", "32")))
         self.queue_capacity = max(self.worker_slots, int(os.getenv("RTDC_FAST_QUEUE_CAPACITY", "4096")))
@@ -76,8 +79,9 @@ class FastPathEngine:
         self._rejected = 0
         self._queue_timeouts = 0
         self._completed = 0
+        self._shared_profile_loads = 0
 
-    def runtime_info(self) -> dict[str, int | float]:
+    def runtime_info(self) -> dict[str, int | float | bool]:
         return {
             "workers": self.worker_slots,
             "pending_capacity": self.queue_capacity,
@@ -88,6 +92,8 @@ class FastPathEngine:
             "rejected": self._rejected,
             "queue_timeouts": self._queue_timeouts,
             "completed": self._completed,
+            "shared_profile_registry": self.registry.configured,
+            "shared_profile_loads": self._shared_profile_loads,
         }
 
     def _compile(self, spec: FastProfileCreate) -> tuple[BaseModel, str, list[str]]:
@@ -150,7 +156,13 @@ class FastPathEngine:
             raise ValueError("local_classifier fast profile requires at least one model_id")
         return template, provider, list(dict.fromkeys(model_ids))
 
-    async def create_profile(self, spec: FastProfileCreate) -> FastProfileSummary:
+    async def _install_profile(
+        self,
+        spec: FastProfileCreate,
+        *,
+        persist: bool,
+        stored_summary: FastProfileSummary | None = None,
+    ) -> FastProfileSummary:
         template, provider, model_ids = self._compile(spec)
         prewarmed = False
         if spec.prewarm and model_ids:
@@ -159,6 +171,7 @@ class FastPathEngine:
             prewarmed = True
 
         profile_id = spec.profile_id or "fp_" + uuid.uuid4().hex[:20]
+        created_at = stored_summary.created_at if stored_summary else datetime.now(timezone.utc).isoformat()
         summary = FastProfileSummary(
             profile_id=profile_id,
             kind=spec.kind,
@@ -166,14 +179,36 @@ class FastPathEngine:
             target_ms=spec.target_ms,
             model_ids=model_ids,
             prewarmed=prewarmed,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=created_at,
         )
         async with self._lock:
             if profile_id not in self._profiles and len(self._profiles) >= self.profile_limit:
                 oldest = min(self._profiles.values(), key=lambda item: item.summary.created_at)
                 self._profiles.pop(oldest.summary.profile_id, None)
             self._profiles[profile_id] = CompiledProfile(summary=summary, template=template)
+
+        if persist and self.registry.configured:
+            persisted_spec = spec.model_copy(update={"profile_id": profile_id})
+            await self.registry.save(persisted_spec, summary)
         return summary
+
+    async def create_profile(self, spec: FastProfileCreate) -> FastProfileSummary:
+        return await self._install_profile(spec, persist=True)
+
+    async def _load_shared_profile(self, profile_id: str) -> CompiledProfile | None:
+        if not self.registry.configured:
+            return None
+        row = await self.registry.get(profile_id)
+        if row is None:
+            return None
+        spec, stored_summary = row
+        async with self._lock:
+            existing = self._profiles.get(profile_id)
+        if existing is not None:
+            return existing
+        await self._install_profile(spec, persist=False, stored_summary=stored_summary)
+        self._shared_profile_loads += 1
+        return self._profiles.get(profile_id)
 
     def get_profile(self, profile_id: str) -> FastProfileSummary:
         profile = self._profiles.get(profile_id)
@@ -184,9 +219,18 @@ class FastPathEngine:
     def list_profiles(self) -> list[FastProfileSummary]:
         return [item.summary for item in sorted(self._profiles.values(), key=lambda value: value.summary.created_at)]
 
+    async def list_profiles_shared(self) -> list[FastProfileSummary]:
+        by_id = {item.profile_id: item for item in self.list_profiles()}
+        if self.registry.configured:
+            for _, summary in await self.registry.list():
+                by_id.setdefault(summary.profile_id, summary)
+        return sorted(by_id.values(), key=lambda item: item.created_at)
+
     async def delete_profile(self, profile_id: str) -> bool:
         async with self._lock:
-            return self._profiles.pop(profile_id, None) is not None
+            local_deleted = self._profiles.pop(profile_id, None) is not None
+        shared_deleted = await self.registry.delete(profile_id) if self.registry.configured else False
+        return local_deleted or shared_deleted
 
     @staticmethod
     def _input_limit(kind: str) -> int:
@@ -198,6 +242,8 @@ class FastPathEngine:
 
     async def execute(self, request: FastDecisionRequest) -> FastDecisionResponse:
         profile = self._profiles.get(request.profile_id)
+        if not profile:
+            profile = await self._load_shared_profile(request.profile_id)
         if not profile:
             raise FileNotFoundError(f"fast profile not found: {request.profile_id}")
         if len(request.input) > self._input_limit(profile.summary.kind):
