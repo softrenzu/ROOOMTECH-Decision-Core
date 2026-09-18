@@ -1,0 +1,120 @@
+name: performance-ml
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/performance-ml.yml"
+
+jobs:
+  measure-local-classifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[ml,dev]'
+      - name: Start API
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/rtdc-uvicorn.log 2>&1 &
+          echo $! > /tmp/rtdc-uvicorn.pid
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/rtdc-uvicorn.log
+          exit 1
+      - name: Train and prewarm local classifier
+        run: |
+          python - <<'PY' | tee local-profile.json
+          import json, httpx
+
+          account = [
+              "ログインできません", "パスワードを忘れました", "アカウントに入れない", "認証に失敗します",
+              "パスワードを変更したい", "ログイン方法を教えて", "アカウントを復旧したい", "サインインできません"
+          ]
+          billing = [
+              "請求書を再発行してください", "料金の請求について確認したい", "支払い金額を確認したい", "請求が二重です",
+              "領収書が欲しい", "決済について質問です", "料金明細をください", "請求先を変更したい"
+          ]
+          examples = []
+          for i in range(10):
+              for text in account:
+                  examples.append({"text": f"{text} {i}", "label": "account"})
+              for text in billing:
+                  examples.append({"text": f"{text} {i}", "label": "billing"})
+
+          train = {
+              "decision_id": "support_route",
+              "model_name": "performance-smoke-local-route",
+              "examples": examples,
+              "feature_dim": 1024,
+              "ngram_min": 1,
+              "ngram_max": 3,
+              "epochs": 20,
+              "learning_rate": 0.03,
+              "batch_size": 32,
+              "validation_split": 0.2,
+              "device": "cpu"
+          }
+          with httpx.Client(base_url="http://127.0.0.1:8000", timeout=120.0) as client:
+              trained = client.post("/v1/models/train", json=train)
+              trained.raise_for_status()
+              trained = trained.json()
+              profile = client.post("/v1/realtime/profiles", json={
+                  "profile_id": "perf-local-route",
+                  "kind": "route",
+                  "target_ms": 150,
+                  "prewarm": True,
+                  "request": {
+                      "provider": "local_classifier",
+                      "model_id": trained["model_id"],
+                      "min_confidence": 0.5,
+                      "routes": [
+                          {"id": "billing", "description": "billing and payment"},
+                          {"id": "account", "description": "login and account"}
+                      ]
+                  }
+              })
+              profile.raise_for_status()
+              print(json.dumps({"training": trained, "profile": profile.json()}, ensure_ascii=False, indent=2))
+          PY
+      - name: Measure local-classifier WebSocket fast path
+        run: |
+          python benchmarks/websocket_realtime_load.py \
+            --ws-url ws://127.0.0.1:8000/v1/realtime/ws \
+            --profile-id perf-local-route \
+            --input 'ログインできなくてパスワードも忘れました' \
+            --requests 5000 \
+            --connections 32 \
+            | tee local-classifier-ws.json
+      - name: Measure local-classifier in-process burst
+        run: |
+          python - <<'PY' | tee local-classifier-inprocess.json
+          import json, httpx
+          payload = {
+              "profile_id": "perf-local-route",
+              "inputs": [
+                  "ログインできません",
+                  "請求書を再発行してください",
+                  "パスワードを変更したいです",
+                  "支払い金額を確認したいです"
+              ],
+              "repeat_runs": 250,
+              "concurrency": 32,
+              "warmup_runs": 10
+          }
+          response = httpx.post("http://127.0.0.1:8000/v1/benchmarks/realtime-fast", json=payload, timeout=120.0)
+          response.raise_for_status()
+          print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+          PY
+      - name: Upload measured results
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-ml
+          path: |
+            local-profile.json
+            local-classifier-ws.json
+            local-classifier-inprocess.json
