@@ -2,11 +2,11 @@
 
 ROOOMTECH Decision Core is an independently developed structured-decision engine for turning unstructured text into typed, machine-usable decisions.
 
-Version 0.2 adds a trainable lightweight local classifier that works directly with Unicode character n-grams. It supports Japanese and other languages without relying on a third-party proprietary decision model, and can run inference on CPU or NVIDIA CUDA GPU.
+Version 0.3 adds reproducible accuracy and latency benchmarking for the trainable local classifier. The local model uses Unicode character n-grams, supports Japanese and other languages, and can run on CPU or NVIDIA CUDA GPU.
 
 ## Core features
 
-- Train your own classification model from labeled CSV/JSON-style examples through the API
+- Train your own classification model from labeled examples through the API
 - Japanese / English / Chinese / Korean / mixed-language input without tokenizer dictionaries
 - CPU or CUDA GPU inference with automatic device selection
 - Multiple typed decisions in one API request
@@ -17,7 +17,9 @@ Version 0.2 adds a trainable lightweight local classifier that works directly wi
 - Deterministic rules provider for zero-model deployments
 - OpenAI-compatible provider abstraction for authorized external models
 - Batch API and Dify-friendly HTTP interface
-- No raw training-text persistence by the local training API
+- Accuracy, macro-F1, calibration, confusion-matrix and latency benchmarking
+- p50 / p95 / p99 latency and throughput measurement
+- No raw training-text or benchmark-text persistence by the local APIs
 - Personal-use-free / business-use-paid licensing
 - Optional signed commercial-license enforcement
 
@@ -74,6 +76,27 @@ If the local classifier is confident enough, the request finishes locally. If co
 
 See `docs/TRAINING_API.md` for training, GPU and security details.
 
+## Benchmark accuracy and speed
+
+A trained local model can be evaluated through:
+
+```text
+POST /v1/benchmarks/local
+```
+
+The benchmark reports accuracy, macro precision/recall/F1, per-label metrics, confusion matrix, calibration error, confidence-threshold coverage, cold-start latency, mean/p50/p95/p99 per-item latency and throughput.
+
+The repository also includes `benchmarks/japanese_hospitality_intent_360.py`, which deterministically builds 360 independently authored synthetic Japanese hospitality-support examples, with 252 training examples and 108 held-out test examples.
+
+Run the bundled benchmark:
+
+```bash
+pip install -e '.[ml]'
+python benchmarks/train_and_benchmark_japanese.py
+```
+
+For a production-quality number, replace the synthetic examples with lawfully collected real held-out business data. See `docs/BENCHMARKING.md`.
+
 ## Dify
 
 Use an HTTP Request node against `/v1/decide`. Branch on `results[].requires_review`, `results[].selected`, or `results[].confidence`.
@@ -92,4 +115,4 @@ ROOOMTECH Decision Core is an independent product. It does not include or depend
 
 ## Version
 
-`0.2.0`
+`0.3.0`
