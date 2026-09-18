@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from app import __version__
 from app.benchmark import BenchmarkRunner
 from app.engine import DecisionEngine
@@ -19,20 +20,24 @@ from app.models import (
     BenchmarkResponse,
     DecisionRequest,
     DecisionResponse,
+    DecisionSpec,
     LocalModelSummary,
     LocalPredictRequest,
     LocalPredictResponse,
+    MultimodalDecisionResponse,
     TrainModelRequest,
     TrainModelResponse,
 )
+from app.multimodal import MediaFile, MultimodalDecisionEngine
 
 app = FastAPI(
     title="ROOOMTECH Decision Core",
     version=__version__,
-    description="Independent structured-decision API with local multilingual classifiers, GPU inference, benchmarking and optional LLM fallback.",
+    description="Independent multimodal structured-decision API with text, image, PDF and audio input.",
 )
 engine = DecisionEngine()
 benchmark_runner = BenchmarkRunner(engine.local)
+multimodal_engine = MultimodalDecisionEngine(engine)
 
 
 def require_admin(x_rtdc_admin_key: str | None = Header(default=None)):
@@ -66,6 +71,11 @@ async def info():
         "version": __version__,
         "model_provider_configured": engine.model.configured,
         "local_ml": engine.local.runtime_info(),
+        "multimodal": {
+            "image": multimodal_engine.vision.configured,
+            "pdf": True,
+            "audio": True,
+        },
         "license": license_info,
         "raw_input_persistence": "none-by-default",
     }
@@ -91,6 +101,52 @@ async def decide_batch(request: BatchRequest):
         return BatchResponse(items=items)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"batch decision provider error: {exc}") from exc
+
+
+@app.post("/v1/multimodal/decide", response_model=MultimodalDecisionResponse)
+async def decide_multimodal(
+    decisions_json: str = Form(...),
+    text: str = Form(default=""),
+    provider: str = Form(default="auto"),
+    image_weight: float = Form(default=0.55),
+    files: list[UploadFile] | None = File(default=None),
+):
+    try:
+        if provider not in {"auto", "rules", "local_classifier", "openai_compatible"}:
+            raise ValueError("invalid provider")
+        if not 0.0 <= image_weight <= 1.0:
+            raise ValueError("image_weight must be between 0 and 1")
+        raw_specs = json.loads(decisions_json)
+        if not isinstance(raw_specs, list):
+            raise ValueError("decisions_json must be a JSON array")
+        decisions = [DecisionSpec.model_validate(item) for item in raw_specs]
+        if not decisions or len(decisions) > 30:
+            raise ValueError("decisions must contain 1 to 30 items")
+
+        max_file = int(os.getenv("RTDC_MAX_FILE_MB", "20")) * 1024 * 1024
+        max_total = int(os.getenv("RTDC_MAX_TOTAL_UPLOAD_MB", "50")) * 1024 * 1024
+        media_files: list[MediaFile] = []
+        total = 0
+        for upload in files or []:
+            data = await upload.read(max_file + 1)
+            if len(data) > max_file:
+                raise ValueError(f"file too large: {upload.filename}")
+            total += len(data)
+            if total > max_total:
+                raise ValueError("total upload size exceeds configured limit")
+            media_files.append(MediaFile(
+                filename=upload.filename or "upload.bin",
+                content_type=upload.content_type or "application/octet-stream",
+                data=data,
+            ))
+
+        return await multimodal_engine.decide(text, decisions, provider, media_files, image_weight)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"multimodal decision error: {exc}") from exc
 
 
 @app.post("/v1/models/train", response_model=TrainModelResponse, dependencies=[Depends(require_admin)])
@@ -125,17 +181,8 @@ async def predict_local_model(model_id: str, request: LocalPredictRequest):
         raise HTTPException(status_code=400, detail=f"prediction error: {exc}") from exc
 
 
-@app.post(
-    "/v1/benchmarks/local",
-    response_model=BenchmarkResponse,
-    dependencies=[Depends(require_admin)],
-)
+@app.post("/v1/benchmarks/local", response_model=BenchmarkResponse, dependencies=[Depends(require_admin)])
 async def benchmark_local(request: BenchmarkRequest):
-    """Measure held-out accuracy, calibration and local inference latency.
-
-    The endpoint never calls an external model. Benchmark examples are evaluated in memory
-    and are not persisted by Decision Core.
-    """
     try:
         return await asyncio.to_thread(benchmark_runner.run_local, request)
     except FileNotFoundError as exc:

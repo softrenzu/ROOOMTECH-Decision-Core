@@ -1,19 +1,26 @@
 # Changelog
 
+## 0.4.0 - 2026-09-18
+
+- Added unified multimodal decision endpoint for text, images, PDFs and audio
+- Added simultaneous image + text probability fusion
+- Added configurable local CLIP-compatible vision scoring without bundling third-party weights
+- Added local PDF text extraction and rendered-page vision fallback for sparse/scanned PDFs
+- Added local faster-whisper audio transcription with immediate temporary-file cleanup
+- Added per-file and per-request upload limits
+- Added multimodal privacy/security documentation and tests
+- Kept confidence, margin, entropy and abstention gates after multimodal fusion
+
 ## 0.3.0 - 2026-09-18
 
-- Added local classifier benchmark API
-- Added top-1 accuracy and macro precision/recall/F1
-- Added per-label metrics and confusion matrix
-- Added confidence calibration error (ECE)
+- Added reproducible local-model benchmark runner
+- Added accuracy, macro precision/recall/F1 and per-label metrics
+- Added confusion matrix and expected calibration error
 - Added confidence-threshold coverage and selective accuracy
-- Added cold-start, mean, p50, p95 and p99 per-item latency
+- Added cold-start, mean, p50, p95 and p99 latency reporting
 - Added throughput measurement
-- Added bounded misclassification metadata without returning benchmark text
-- Added 360-example independently authored synthetic Japanese hospitality benchmark
-- Added turnkey train + held-out benchmark script
-- Added benchmark documentation and third-party comparison guardrails
-- Benchmark examples are evaluated in memory and are not persisted
+- Added independent synthetic Japanese benchmark generator with 360 examples and a held-out test split
+- Added benchmark API and documentation
 
 ## 0.2.0 - 2026-09-18
 

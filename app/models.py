@@ -151,48 +151,20 @@ class BenchmarkExample(BaseModel):
 
 class BenchmarkRequest(BaseModel):
     model_id: str = Field(min_length=1, max_length=100, pattern=MODEL_ID_PATTERN)
-    examples: list[BenchmarkExample] = Field(min_length=2, max_length=10_000)
+    examples: list[BenchmarkExample] = Field(min_length=1, max_length=10000)
     device: Literal["auto", "cpu", "cuda"] = "auto"
-    warmup_runs: int = Field(default=2, ge=0, le=20)
-    repeat_runs: int = Field(default=5, ge=1, le=100)
-    batch_size: int = Field(default=32, ge=1, le=1000)
+    warmup_runs: int = Field(default=3, ge=0, le=50)
+    repeat_runs: int = Field(default=10, ge=1, le=100)
+    batch_size: int = Field(default=32, ge=1, le=2048)
     confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-    max_errors: int = Field(default=25, ge=0, le=200)
-
-
-class BenchmarkLabelMetrics(BaseModel):
-    label: str
-    precision: float
-    recall: float
-    f1: float
-    support: int
-
-
-class BenchmarkError(BaseModel):
-    index: int
-    expected: str
-    predicted: str
-    confidence: float
-
-
-class BenchmarkTiming(BaseModel):
-    cold_start_ms: float
-    mean_item_ms: float
-    p50_item_ms: float
-    p95_item_ms: float
-    p99_item_ms: float
-    throughput_items_per_second: float
-    timed_seconds: float
+    max_errors: int = Field(default=25, ge=0, le=500)
 
 
 class BenchmarkResponse(BaseModel):
     model_id: str
     device: str
     examples: int
-    repeat_runs: int
-    batch_size: int
-    confidence_threshold: float
-    timings: BenchmarkTiming
+    labels: list[str]
     accuracy: float
     macro_precision: float
     macro_recall: float
@@ -201,6 +173,32 @@ class BenchmarkResponse(BaseModel):
     expected_calibration_error: float
     coverage_at_threshold: float
     selective_accuracy_at_threshold: float | None
-    per_label: list[BenchmarkLabelMetrics]
+    confidence_threshold: float
     confusion_matrix: dict[str, dict[str, int]]
-    errors: list[BenchmarkError] = Field(default_factory=list)
+    per_label: dict[str, dict[str, float]]
+    cold_start_ms: float
+    mean_latency_ms_per_item: float
+    p50_latency_ms_per_item: float
+    p95_latency_ms_per_item: float
+    p99_latency_ms_per_item: float
+    throughput_items_per_second: float
+    repeat_runs: int
+    warmup_runs: int
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    raw_text_persisted: bool = False
+
+
+class MultimodalDecisionResponse(BaseModel):
+    results: list[DecisionResult]
+    latency_ms: float
+    model_called: bool
+    vision_model_called: bool
+    modalities: list[str]
+    files_processed: int
+    image_count: int
+    pdf_pages: int
+    pdf_text_chars: int
+    audio_seconds: float
+    transcript_chars: int
+    fused_text_chars: int
+    raw_files_persisted: bool = False
