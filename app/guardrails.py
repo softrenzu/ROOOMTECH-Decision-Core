@@ -330,7 +330,7 @@ class GuardrailEngine:
         elapsed = (time.perf_counter() - started) * 1000.0
         return RagVerificationResponse(
             passed=all(item.status == "pass" for item in findings) and not injection_hits,
-            requires_review=bool(injection_hits) or any(item.status == "review" for item in findings),
+            requires_review=bool(injection_hits) or any(item.status != "pass" for item in findings),
             claim_findings=findings,
             context_injection_detected=bool(injection_hits),
             injection_evidence=[f"pattern:{_truncate(item)}" for item in injection_hits],
