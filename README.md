@@ -1,29 +1,29 @@
 # ROOOMTECH Decision Core
 
-ROOOMTECH Decision Core is an independently developed multimodal structured-decision engine for turning unstructured inputs into typed, machine-usable decisions.
+ROOOMTECH Decision Core is an independently developed multimodal decision engine that turns unstructured inputs into typed, probabilistic, machine-usable decisions.
 
-Version 0.4 adds one decision surface for **text + images + PDFs + audio**. Text can be combined with one or more images in the same request, PDFs can be routed through extracted text or rendered-page vision, and audio is transcribed locally before the normal confidence-gated decision flow.
+Version 0.5 adds reusable **decision operations** so application code can call detection, routing, scoring, verification, ranking/search and probabilistic feature extraction directly. These sit on top of the same confidence, abstention, local-model and optional LLM-fallback system used by the core classifier.
 
 ## Core features
 
-- Text, image, PDF and audio input through one API
-- Image + text score fusion for a single typed decision
-- PDF embedded-text extraction with optional rendered-page vision fallback
-- Local audio transcription before classification
-- Train your own text classification model from labeled examples
-- Japanese / English / Chinese / Korean / mixed-language text support
-- CPU or CUDA GPU inference with automatic device selection
-- Multiple typed decisions in one request
-- Probability distribution for every choice
+- General multi-choice classification through `/v1/decide`
+- Property detection with explicit probability thresholds
+- Confidence-gated application routing
+- Rubric scoring with an expected numeric score
+- Multi-check policy / quality verification with `pass`, `fail` and `review`
+- Multilingual offline ranking/search using Unicode n-gram similarity
+- Optional authorized model-based reranking
+- Probabilistic feature extraction for downstream ML models
+- Text, image, PDF and audio input
+- Image + text score fusion
+- Trainable local multilingual text classifier
+- CPU or CUDA GPU inference
 - Confidence, top-2 margin and normalized entropy gates
-- Abstain / human-review behavior instead of forcing low-confidence decisions
-- Local classifier first, optional LLM fallback only when needed
-- Deterministic rules provider for zero-model deployments
-- OpenAI-compatible provider abstraction for authorized external models
-- Accuracy, macro-F1, calibration and latency benchmarking
+- Abstain / human-review behavior
+- Local classifier first with optional OpenAI-compatible fallback
+- Accuracy, calibration and latency benchmarking
 - No raw upload persistence by default
 - Personal-use-free / business-use-paid licensing
-- Optional signed commercial-license enforcement
 
 ## Quick start
 
@@ -37,49 +37,46 @@ Open `http://localhost:8000/docs`.
 
 For text-only deployments, `pip install -e '.[ml]'` is sufficient.
 
-## Multimodal example
+## Decision operations
 
-Configure a CLIP-compatible vision model that you are authorized to use:
+The higher-level endpoints are:
 
-```env
-RTDC_VISION_MODEL=<model-id>
-RTDC_VISION_DEVICE=auto
+```text
+POST /v1/ops/detect
+POST /v1/ops/route
+POST /v1/ops/score
+POST /v1/ops/verify
+POST /v1/ops/rank
+POST /v1/ops/search
+POST /v1/ops/features
 ```
 
-Then send text and an image together:
+They are designed so control flow remains ordinary application code while the decision layer returns probabilities and review signals. See `docs/DECISION_OPERATIONS.md`.
 
-```bash
-curl -X POST http://localhost:8000/v1/multimodal/decide \
-  -F 'text=The customer says this item arrived broken.' \
-  -F 'decisions_json=[{"id":"condition","question":"What is the item condition?","choices":["normal","needs_attention","damaged"]}]' \
-  -F 'files=@photo.jpg'
+Example routing request:
+
+```json
+{
+  "input": "ログインできません。パスワードを再設定したいです",
+  "provider": "rules",
+  "routes": [
+    {"id": "billing", "keywords": ["請求"]},
+    {"id": "account", "keywords": ["ログイン", "パスワード"]}
+  ]
+}
 ```
 
-The same endpoint accepts PDFs and common audio formats. See `docs/MULTIMODAL.md`.
+## Multimodal decisions
 
-## Local text classifier
+`POST /v1/multimodal/decide` accepts text together with images, PDFs and audio. No third-party vision or speech model weights are bundled; deployers configure models they are authorized to use. See `docs/MULTIMODAL.md`.
 
-Train a Japanese demo model:
+## Local model and benchmarks
 
-```bash
-curl -X POST http://localhost:8000/v1/models/train \
-  -H 'content-type: application/json' \
-  --data-binary @examples/train_japanese_intent.json
-```
+`POST /v1/models/train` trains the lightweight local text classifier. `POST /v1/benchmarks/local` measures accuracy, macro-F1, calibration, p50/p95/p99 latency and throughput. The repository benchmark data is independently authored synthetic data; production claims should use lawful held-out real data.
 
-The response returns `model_id`. Put that ID into a decision. If the local classifier is confident enough, the request finishes locally. If confidence gates fail and an OpenAI-compatible endpoint is configured, `auto` mode can fall back to the LLM.
+## Dify and application integration
 
-## Benchmark accuracy and speed
-
-A trained local model can be evaluated through `POST /v1/benchmarks/local`.
-
-The benchmark reports accuracy, macro precision/recall/F1, per-label metrics, confusion matrix, calibration error, confidence-threshold coverage, cold-start latency, mean/p50/p95/p99 per-item latency and throughput.
-
-The repository includes an independently authored synthetic Japanese benchmark generator with 360 examples, 252 training examples and 108 held-out test examples. For production claims, replace synthetic examples with lawfully collected real held-out data. See `docs/BENCHMARKING.md`.
-
-## Dify
-
-Use an HTTP Request node against `/v1/decide` for text-only decisions, or a multipart HTTP request against `/v1/multimodal/decide` when files are involved.
+Use ordinary HTTP Request nodes against the JSON endpoints. File inputs use the multipart `/v1/multimodal/decide` endpoint. The operation endpoints are intentionally small so they can also be called directly from code without adopting a workflow framework.
 
 ## Licensing
 
@@ -91,8 +88,8 @@ Commercial licensing: support@rooomtech.com
 
 ## Independence
 
-ROOOMTECH Decision Core is an independent product. It does not include third-party proprietary source code, private APIs, decision-service outputs or benchmark data, and it is not marketed as a clone, successor or official compatible implementation of another vendor's product. No third-party vision or speech model weights are bundled. See `NOTICE.md`, `BRAND_GUIDELINES.md` and `docs/LEGAL_DESIGN.md`.
+ROOOMTECH Decision Core is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data or third-party UI assets. It is not marketed as a clone, successor or official compatible implementation of another vendor's product. See `NOTICE.md`, `BRAND_GUIDELINES.md` and `docs/LEGAL_DESIGN.md`.
 
 ## Version
 
-`0.4.0`
+`0.5.0`

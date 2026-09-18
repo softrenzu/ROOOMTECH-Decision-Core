@@ -1,7 +1,7 @@
 [project]
 name = "rooomtech-decision-core"
-version = "0.4.0"
-description = "Independent multimodal structured-decision API with local classifiers, confidence gating and optional LLM fallback"
+version = "0.5.0"
+description = "Independent multimodal structured-decision API with reusable detection, routing, scoring, verification and ranking primitives"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",

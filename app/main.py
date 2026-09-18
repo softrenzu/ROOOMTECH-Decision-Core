@@ -29,15 +29,31 @@ from app.models import (
     TrainModelResponse,
 )
 from app.multimodal import MediaFile, MultimodalDecisionEngine
+from app.operation_models import (
+    DetectionRequest,
+    DetectionResponse,
+    FeatureExtractionRequest,
+    FeatureExtractionResponse,
+    RankRequest,
+    RankResponse,
+    RouteRequest,
+    RouteResponse,
+    ScoreRequest,
+    ScoreResponse,
+    VerificationRequest,
+    VerificationResponse,
+)
+from app.operations import OperationalDecisionEngine
 
 app = FastAPI(
     title="ROOOMTECH Decision Core",
     version=__version__,
-    description="Independent multimodal structured-decision API with text, image, PDF and audio input.",
+    description="Independent multimodal structured-decision API with reusable decision operations.",
 )
 engine = DecisionEngine()
 benchmark_runner = BenchmarkRunner(engine.local)
 multimodal_engine = MultimodalDecisionEngine(engine)
+operations_engine = OperationalDecisionEngine(engine)
 
 
 def require_admin(x_rtdc_admin_key: str | None = Header(default=None)):
@@ -76,6 +92,7 @@ async def info():
             "pdf": True,
             "audio": True,
         },
+        "operations": ["classification", "detection", "routing", "scoring", "verification", "ranking", "search", "feature_extraction"],
         "license": license_info,
         "raw_input_persistence": "none-by-default",
     }
@@ -101,6 +118,73 @@ async def decide_batch(request: BatchRequest):
         return BatchResponse(items=items)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"batch decision provider error: {exc}") from exc
+
+
+@app.post("/v1/ops/detect", response_model=DetectionResponse)
+async def operation_detect(request: DetectionRequest):
+    try:
+        return await operations_engine.detect(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"detection error: {exc}") from exc
+
+
+@app.post("/v1/ops/route", response_model=RouteResponse)
+async def operation_route(request: RouteRequest):
+    try:
+        return await operations_engine.route(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"routing error: {exc}") from exc
+
+
+@app.post("/v1/ops/score", response_model=ScoreResponse)
+async def operation_score(request: ScoreRequest):
+    try:
+        return await operations_engine.score(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"scoring error: {exc}") from exc
+
+
+@app.post("/v1/ops/verify", response_model=VerificationResponse)
+async def operation_verify(request: VerificationRequest):
+    try:
+        return await operations_engine.verify(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"verification error: {exc}") from exc
+
+
+@app.post("/v1/ops/rank", response_model=RankResponse)
+async def operation_rank(request: RankRequest):
+    try:
+        return await operations_engine.rank(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ranking error: {exc}") from exc
+
+
+@app.post("/v1/ops/search", response_model=RankResponse)
+async def operation_search(request: RankRequest):
+    return await operation_rank(request)
+
+
+@app.post("/v1/ops/features", response_model=FeatureExtractionResponse)
+async def operation_features(request: FeatureExtractionRequest):
+    try:
+        return await operations_engine.extract_features(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"feature extraction error: {exc}") from exc
 
 
 @app.post("/v1/multimodal/decide", response_model=MultimodalDecisionResponse)

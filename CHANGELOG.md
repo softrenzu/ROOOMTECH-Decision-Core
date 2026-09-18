@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 - 2026-09-19
+
+- Added reusable detection primitive with probability thresholds
+- Added confidence-gated routing to explicit application code paths
+- Added rubric scoring with probability-weighted expected numeric scores
+- Added multi-check policy and quality verification with pass/fail/review states
+- Added multilingual offline Unicode n-gram ranking/search
+- Added optional OpenAI-compatible model reranking when explicitly requested
+- Added probabilistic feature extraction for downstream classical ML/statistical models
+- Added deterministic keyword support to detection, routing, scoring and verification
+- Added operation tests and product-separation documentation
+
 ## 0.4.0 - 2026-09-18
 
 - Added unified multimodal decision endpoint for text, images, PDFs and audio
