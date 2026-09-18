@@ -1,5 +1,6 @@
 from app.benchmark import _percentile, classification_metrics
 from app.models import LocalPrediction
+from benchmarks.japanese_hospitality_intent_360 import build_dataset
 
 
 def test_percentile_interpolates():
@@ -21,3 +22,15 @@ def test_classification_metrics_are_correct():
     assert metrics["selective_accuracy_at_threshold"] == 1.0
     assert len(metrics["errors"]) == 1
     assert metrics["confusion_matrix"]["a"]["b"] == 1
+
+
+def test_japanese_benchmark_dataset_is_balanced_and_held_out():
+    dataset = build_dataset()
+    assert len(dataset["examples"]) == 360
+    labels = dataset["labels"]
+    assert len(labels) == 6
+    for label in labels:
+        rows = [row for row in dataset["examples"] if row["label"] == label]
+        assert len(rows) == 60
+        assert sum(row["split"] == "train" for row in rows) == 42
+        assert sum(row["split"] == "test" for row in rows) == 18
