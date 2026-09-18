@@ -2,7 +2,7 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision platform for typed, probabilistic, machine-usable decisions.
 
-Version 0.10 adds governed training datasets, explicit data provenance, train/validation/test splits, active learning from human review, held-out evaluation and model-lineage records. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
+Version 0.11 adds a policy-oriented Guardrail Gateway, pre-execution Tool Call Gate, and local RAG citation/context screening on top of governed datasets, active learning, calibration and human review. Guardrail results are decision-support signals, not security, compliance, or factuality guarantees. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
 
 ## Main capabilities
 
@@ -29,6 +29,9 @@ Version 0.10 adds governed training datasets, explicit data provenance, train/va
 - Governed datasets with provenance, rights attestation and explicit train/validation/test splits
 - Human-review-to-dataset active-learning workflow
 - Dataset fingerprints and model lineage for reproducibility and auditability
+- Guardrail Gateway for input/output/tool-call policy screening
+- Tool Call Gate with allowlists, blocklists, policy checks and explicit authorization for risky actions
+- RAG citation/context screening with claim-level pass/review/fail and context injection checks
 - Personal-use-free / business-use-paid licensing
 
 ## Decision Studio
@@ -41,7 +44,31 @@ http://localhost:8000/studio
 
 The Studio is a ROOOMTECH-designed interface. It does not reproduce a third-party console or playground. It can configure and run a decision, route uncertain results to review, calculate thresholds from held-out outcomes, and resolve human-review items.
 
+The governed-dataset interface is available at:
+
+```text
+http://localhost:8000/datasets
+```
+
 Set `RTDC_STUDIO_API_KEY` in `.env` for protected deployments. When it is blank, `RTDC_ADMIN_API_KEY` is used as the fallback.
+
+## Guardrail Gateway
+
+```text
+POST /v1/guardrails/evaluate
+POST /v1/guardrails/tool-call
+POST /v1/guardrails/rag
+```
+
+`/v1/guardrails/evaluate` can screen AI input, model output, proposed tool calls, or combinations of them. Built-in local signals currently cover prompt-injection-like instruction patterns, sensitive-data-like patterns, credential-like strings and risky-action words. Operators can add their own keyword and semantic policy rules.
+
+`/v1/guardrails/tool-call` is intended to run before an agent executes an action. It supports tool allowlists/blocklists and can block risky actions when explicit authorization is missing. Applications must still enforce normal authentication, authorization, transaction limits, idempotency and approval controls.
+
+`/v1/guardrails/rag` checks each explicit claim against only its cited passages using a fast local lexical-support signal and checks retrieved context for prompt-injection-like patterns. Any non-pass claim or detected context injection is routed to review. Lexical support is a first-pass screening signal and does not prove entailment, factual correctness, absence of contradiction or source authority.
+
+Set `RTDC_GUARDRAIL_API_KEY` to protect these endpoints. If it is blank, the gateway falls back to `RTDC_REALTIME_API_KEY`, then `RTDC_ADMIN_API_KEY`. The guardrail module does not persist submitted input, output, citations or tool arguments by default.
+
+See `docs/GUARDRAILS.md`.
 
 ## Governed datasets and active learning
 
@@ -222,8 +249,8 @@ Natural-person personal, non-business use is available under `LICENSE_PERSONAL.m
 
 This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data, copied UI assets or copied product documentation, and it is not marketed as a clone or official compatible implementation of another vendor's product.
 
-Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
+Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`; guardrail-specific boundaries and limitations are in `docs/GUARDRAILS.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
 
 ## Version
 
-`0.10.0`
+`0.11.0`
