@@ -1,7 +1,7 @@
 [project]
 name = "rooomtech-decision-core"
-version = "0.12.0"
-description = "Independent multimodal decision platform with enterprise projects, scoped API keys, audit, quotas, guardrails, governed datasets, active learning and realtime inference"
+version = "0.13.0"
+description = "Independent multimodal decision platform with project tenant isolation, scoped API keys, WebSocket auth, audit, quotas, guardrails, governed datasets and realtime inference"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
