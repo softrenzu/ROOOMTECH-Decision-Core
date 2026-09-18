@@ -25,17 +25,31 @@ from app.enterprise_models import (
     ProjectUpdate,
 )
 from app.enterprise_store import EnterpriseStore
+from app.tenant_context import reset_tenant_context, set_tenant_context
+
+
+def _enterprise_enforced() -> bool:
+    return os.getenv("RTDC_ENTERPRISE_ENFORCE_PROJECT_KEYS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _require_enterprise_admin(x_rtdc_admin_key: str | None = Header(default=None)) -> bool:
     expected = os.getenv("RTDC_ADMIN_API_KEY", "").strip()
-    if expected and (x_rtdc_admin_key is None or not hmac.compare_digest(x_rtdc_admin_key, expected)):
+    if _enterprise_enforced() and not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="RTDC_ADMIN_API_KEY must be configured when enterprise project enforcement is enabled",
+        )
+    if expected and (
+        x_rtdc_admin_key is None
+        or not hmac.compare_digest(x_rtdc_admin_key, expected)
+    ):
         raise HTTPException(status_code=401, detail="invalid or missing X-RTDC-Admin-Key")
     return True
-
-
-def _enterprise_enforced() -> bool:
-    return os.getenv("RTDC_ENTERPRISE_ENFORCE_PROJECT_KEYS", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _scope_for_path(path: str) -> str:
@@ -43,15 +57,23 @@ def _scope_for_path(path: str) -> str:
         return "guardrails"
     if path.startswith("/v1/realtime"):
         return "realtime"
+    if path.startswith("/v1/models/") and path.endswith("/predict"):
+        return "models"
     return "inference"
 
 
-def _is_management_path(path: str) -> bool:
+def _is_management_request(method: str, path: str) -> bool:
+    if path.startswith("/v1/project/") or path.startswith("/v1/admin/"):
+        return True
+    if path in {"/v1/info", "/v1/accelerator"}:
+        return True
+    if (
+        method.upper() == "POST"
+        and path.startswith("/v1/models/")
+        and path.endswith("/predict")
+    ):
+        return False
     prefixes = (
-        "/v1/admin/",
-        "/v1/project/",
-        "/v1/info",
-        "/v1/accelerator",
         "/v1/models",
         "/v1/datasets",
         "/v1/reviews",
@@ -60,14 +82,40 @@ def _is_management_path(path: str) -> bool:
         "/v1/benchmarks",
         "/v1/mapreduce",
         "/v1/realtime/profiles",
+        "/v1/decide/governed",
     )
     return path.startswith(prefixes)
+
+
+def _management_secret_configured(path: str) -> bool:
+    if path.startswith("/v1/project/") or path in {"/v1/info", "/v1/accelerator"}:
+        return True
+    admin = os.getenv("RTDC_ADMIN_API_KEY", "").strip()
+    if path.startswith(
+        (
+            "/v1/datasets",
+            "/v1/reviews",
+            "/v1/active-learning",
+            "/v1/evals",
+            "/v1/decide/governed",
+        )
+    ):
+        return bool(os.getenv("RTDC_STUDIO_API_KEY", "").strip() or admin)
+    return bool(admin)
+
+
+def _model_id_from_predict_path(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) == 4 and parts[0:2] == ["v1", "models"] and parts[3] == "predict":
+        return parts[2]
+    return None
 
 
 class EnterpriseServices:
     def __init__(self, local_model_provider):
         self.store = EnterpriseStore()
         self.local = local_model_provider
+        self.resource_registry = None
 
     def validate_model_for_decision(self, model_id: str, decision_id: str) -> None:
         model = self.local.get_model(model_id)
@@ -84,30 +132,66 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
     @app.middleware("http")
     async def enterprise_project_auth_and_audit(request: Request, call_next):
         path = request.url.path
-        if not _enterprise_enforced() or not path.startswith("/v1/") or _is_management_path(path):
+        method = request.method.upper()
+        if not _enterprise_enforced() or not path.startswith("/v1/"):
+            return await call_next(request)
+
+        if _is_management_request(method, path):
+            if not _management_secret_configured(path):
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "detail": "a management API secret must be configured when enterprise project enforcement is enabled"
+                    },
+                )
             return await call_next(request)
 
         token = request.headers.get("x-rtdc-project-key", "")
         required_scope = _scope_for_path(path)
         try:
-            auth = services.store.authenticate(token, required_scope=required_scope, consume_quota=True)
+            auth = services.store.authenticate(
+                token, required_scope=required_scope, consume_quota=True
+            )
         except PermissionError as exc:
             return JSONResponse(status_code=401, content={"detail": str(exc)})
         except OverflowError as exc:
-            return JSONResponse(status_code=429, content={"detail": str(exc)}, headers={"Retry-After": "86400"})
+            return JSONResponse(
+                status_code=429,
+                content={"detail": str(exc)},
+                headers={"Retry-After": "86400"},
+            )
+
+        model_id = _model_id_from_predict_path(path)
+        if model_id is not None:
+            if services.resource_registry is None:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "tenant resource registry is unavailable"},
+                )
+            try:
+                services.resource_registry.assert_owner(auth.project_id, "model", model_id)
+            except FileNotFoundError as exc:
+                return JSONResponse(status_code=404, content={"detail": str(exc)})
 
         request.state.rtdc_project = auth
         request_id = request.headers.get("x-request-id") or "req_" + uuid.uuid4().hex[:20]
         started = time.perf_counter()
         status_code = 500
+        tenant_token = None
+        if services.resource_registry is not None:
+            tenant_token = set_tenant_context(auth.project_id, services.resource_registry)
         try:
             response = await call_next(request)
             status_code = response.status_code
             response.headers["X-RTDC-Project-ID"] = auth.project_id
             response.headers["X-Request-ID"] = request_id
-            response.headers["X-RTDC-Quota-Remaining"] = str(max(0, auth.request_quota_per_day - auth.requests_today))
+            response.headers["X-RTDC-Quota-Remaining"] = str(
+                max(0, auth.request_quota_per_day - auth.requests_today)
+            )
             return response
         finally:
+            if tenant_token is not None:
+                reset_tenant_context(tenant_token)
             services.store.audit(
                 project_id=auth.project_id,
                 key_id=auth.key_id,
@@ -148,7 +232,9 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @admin.get("/projects/{project_id}/keys", response_model=list[ProjectKeySummary])
-    async def list_project_keys(project_id: str, limit: int = Query(default=100, ge=1, le=1000)):
+    async def list_project_keys(
+        project_id: str, limit: int = Query(default=100, ge=1, le=1000)
+    ):
         try:
             return services.store.list_keys(project_id, limit=limit)
         except FileNotFoundError as exc:
@@ -161,13 +247,22 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
         return {"revoked": True, "project_id": project_id, "key_id": key_id}
 
     @admin.get("/audit", response_model=list[AuditEvent])
-    async def list_audit(project_id: str | None = Query(default=None), limit: int = Query(default=200, ge=1, le=5000)):
+    async def list_audit(
+        project_id: str | None = Query(default=None),
+        limit: int = Query(default=200, ge=1, le=5000),
+    ):
         return services.store.list_audit(project_id=project_id, limit=limit)
 
-    @admin.post("/projects/{project_id}/models/promote", response_model=ModelDeploymentSummary)
+    @admin.post(
+        "/projects/{project_id}/models/promote", response_model=ModelDeploymentSummary
+    )
     async def promote_model(project_id: str, request: ModelPromotionRequest):
         try:
             services.validate_model_for_decision(request.model_id, request.decision_id)
+            if services.resource_registry is not None:
+                services.resource_registry.register_resource(
+                    project_id, "model", request.model_id
+                )
             return services.store.promote_model(
                 project_id,
                 request.decision_id,
@@ -178,23 +273,39 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @admin.get("/projects/{project_id}/models", response_model=list[ModelDeploymentSummary])
+    @admin.get(
+        "/projects/{project_id}/models", response_model=list[ModelDeploymentSummary]
+    )
     async def list_model_deployments(project_id: str):
         try:
             return services.store.list_deployments(project_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @admin.post("/projects/{project_id}/models/rollback", response_model=ModelRollbackResponse)
+    @admin.post(
+        "/projects/{project_id}/models/rollback", response_model=ModelRollbackResponse
+    )
     async def rollback_model(project_id: str, request: ModelRollbackRequest):
         try:
-            deployment, old_model = services.store.rollback_model(project_id, request.decision_id, request.environment, None)
-            return ModelRollbackResponse(deployment=deployment, rolled_back_from_model_id=old_model)
+            deployment, old_model = services.store.rollback_model(
+                project_id, request.decision_id, request.environment, None
+            )
+            if services.resource_registry is not None:
+                services.resource_registry.register_resource(
+                    project_id, "model", deployment.model_id
+                )
+            return ModelRollbackResponse(
+                deployment=deployment, rolled_back_from_model_id=old_model
+            )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     app.include_router(admin)
 
@@ -202,30 +313,56 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
 
     def project_auth(x_rtdc_project_key: str | None = Header(default=None)):
         try:
-            return services.store.authenticate(x_rtdc_project_key or "", required_scope=None, consume_quota=False)
+            return services.store.authenticate(
+                x_rtdc_project_key or "", required_scope=None, consume_quota=False
+            )
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     def project_inference_auth(x_rtdc_project_key: str | None = Header(default=None)):
         try:
-            return services.store.authenticate(x_rtdc_project_key or "", required_scope="inference", consume_quota=True)
+            return services.store.authenticate(
+                x_rtdc_project_key or "",
+                required_scope="inference",
+                consume_quota=True,
+            )
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except OverflowError as exc:
-            raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "86400"}) from exc
+            raise HTTPException(
+                status_code=429,
+                detail=str(exc),
+                headers={"Retry-After": "86400"},
+            ) from exc
 
     @project.get("/deployments", response_model=list[ModelDeploymentSummary])
     async def project_deployments(auth=Depends(project_auth)):
         return services.store.list_deployments(auth.project_id)
 
     @project.post("/predict", response_model=DeployedPredictResponse)
-    async def project_deployed_predict(payload: DeployedPredictRequest, request: Request, auth=Depends(project_inference_auth)):
+    async def project_deployed_predict(
+        payload: DeployedPredictRequest,
+        request: Request,
+        auth=Depends(project_inference_auth),
+    ):
         request_id = request.headers.get("x-request-id") or "req_" + uuid.uuid4().hex[:20]
         started = time.perf_counter()
         status_code = 500
+        tenant_token = None
         try:
-            deployment = services.store.get_deployment(auth.project_id, payload.decision_id, payload.environment)
-            services.validate_model_for_decision(deployment.model_id, payload.decision_id)
+            deployment = services.store.get_deployment(
+                auth.project_id, payload.decision_id, payload.environment
+            )
+            if services.resource_registry is not None:
+                services.resource_registry.assert_owner(
+                    auth.project_id, "model", deployment.model_id
+                )
+                tenant_token = set_tenant_context(
+                    auth.project_id, services.resource_registry
+                )
+            services.validate_model_for_decision(
+                deployment.model_id, payload.decision_id
+            )
             device, predictions = await asyncio.to_thread(
                 services.local.predict_many,
                 deployment.model_id,
@@ -242,15 +379,21 @@ def install_enterprise_api(app, local_model_provider) -> EnterpriseServices:
                 device=device,
                 prediction=predictions[0],
                 latency_ms=round((time.perf_counter() - started) * 1000.0, 3),
-                quota_remaining_today=max(0, auth.request_quota_per_day - auth.requests_today),
+                quota_remaining_today=max(
+                    0, auth.request_quota_per_day - auth.requests_today
+                ),
             )
         except FileNotFoundError as exc:
             status_code = 404
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
             status_code = 502
-            raise HTTPException(status_code=502, detail=f"deployed model inference error: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"deployed model inference error: {exc}"
+            ) from exc
         finally:
+            if tenant_token is not None:
+                reset_tenant_context(tenant_token)
             services.store.audit(
                 project_id=auth.project_id,
                 key_id=auth.key_id,
