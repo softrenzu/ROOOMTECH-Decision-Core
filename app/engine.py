@@ -5,6 +5,7 @@ import time
 from app.models import ChoiceScore, DecisionRequest, DecisionResponse, DecisionResult, DecisionSpec
 from app.ml import LocalClassifierProvider
 from app.providers import RulesProvider, OpenAICompatibleProvider
+from app.tenant_context import assert_model_access
 
 
 class DecisionEngine:
@@ -68,6 +69,8 @@ class DecisionEngine:
 
         if request.provider in {"auto", "local_classifier"}:
             local_specs = [spec for spec in request.decisions if spec.model_id]
+            for spec in local_specs:
+                assert_model_access(spec.model_id)
             if request.provider == "local_classifier":
                 missing = [spec.id for spec in request.decisions if not spec.model_id]
                 if missing:
