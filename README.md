@@ -2,7 +2,7 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision platform for typed, probabilistic, machine-usable decisions.
 
-Version 0.9 adds an independently designed Decision Studio, empirical calibration, confidence-threshold recommendations, governed decisions and a privacy-conscious human-review queue. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
+Version 0.10 adds governed training datasets, explicit data provenance, train/validation/test splits, active learning from human review, held-out evaluation and model-lineage records. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
 
 ## Main capabilities
 
@@ -25,7 +25,10 @@ Version 0.9 adds an independently designed Decision Studio, empirical calibratio
 - Confidence, margin, entropy, abstention and human-review gates
 - Decision Studio for configuring and testing governed decisions
 - Calibration Studio with ECE, Brier score, reliability bins and threshold/coverage curves
-- Human Review Queue with retention controls and active-learning export
+- Human Review Queue with retention controls
+- Governed datasets with provenance, rights attestation and explicit train/validation/test splits
+- Human-review-to-dataset active-learning workflow
+- Dataset fingerprints and model lineage for reproducibility and auditability
 - Personal-use-free / business-use-paid licensing
 
 ## Decision Studio
@@ -36,9 +39,36 @@ Start the API and open:
 http://localhost:8000/studio
 ```
 
-The Studio is a ROOOMTECH-designed interface. It does not reproduce a third-party console or playground. It can configure and run a decision, route uncertain results to review, calculate thresholds from held-out outcomes, resolve human-review items, and export operator-approved training examples.
+The Studio is a ROOOMTECH-designed interface. It does not reproduce a third-party console or playground. It can configure and run a decision, route uncertain results to review, calculate thresholds from held-out outcomes, and resolve human-review items.
 
 Set `RTDC_STUDIO_API_KEY` in `.env` for protected deployments. When it is blank, `RTDC_ADMIN_API_KEY` is used as the fallback.
+
+## Governed datasets and active learning
+
+Create a dataset only after recording its source and affirming that the operator has the right to use it:
+
+```text
+POST /v1/datasets
+GET  /v1/datasets
+GET  /v1/datasets/{dataset_id}
+POST /v1/datasets/{dataset_id}/examples
+GET  /v1/datasets/{dataset_id}/examples
+POST /v1/datasets/{dataset_id}/import-reviews
+POST /v1/datasets/{dataset_id}/train
+GET  /v1/datasets/{dataset_id}/models
+GET  /v1/active-learning/candidates
+POST /v1/datasets/purge-expired
+```
+
+Dataset creation requires a provenance statement plus `rights_attested: true`. Allowed source categories are operator-owned, consented, licensed, synthetic, internal business records and public-domain data. The workflow does not require outputs from another proprietary decision service.
+
+Examples are assigned to explicit `train`, `validation` or `test` splits. Duplicate raw text cannot be inserted into another split within the same dataset, reducing accidental train/test leakage. `GET /v1/datasets/{dataset_id}` returns a deterministic SHA-256 fingerprint over the logical dataset state.
+
+Training uses only the `train` split. A separate validation or test split can be benchmarked after training. Each training run creates a lineage record containing the resulting model ID, dataset fingerprint, training metadata and held-out evaluation metrics.
+
+Resolved human-review items can be imported into a dataset only when their raw input was explicitly retained. Pending review items are exposed as uncertainty-prioritized active-learning candidates; a model suggestion is never automatically treated as ground truth.
+
+See `docs/DATASET_GOVERNANCE.md`.
 
 ## Governed decisions
 
@@ -87,7 +117,7 @@ POST /v1/reviews/purge-expired
 GET  /v1/reviews/export/training-examples
 ```
 
-The built-in SQLite queue is intended for single-node and evaluation deployments. Enterprise/multi-node deployments should place the review workflow on an approved managed database with organizational access controls, backups and retention enforcement.
+The built-in SQLite review and dataset stores are intended for local, evaluation and single-node deployments. Enterprise/multi-node deployments should use approved managed storage with organizational access controls, encryption, backups, audit logging and retention enforcement.
 
 ## Fast realtime path
 
@@ -192,8 +222,8 @@ Natural-person personal, non-business use is available under `LICENSE_PERSONAL.m
 
 This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data, copied UI assets or copied product documentation, and it is not marketed as a clone or official compatible implementation of another vendor's product.
 
-Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims. Commercial launch should include trademark and counsel review for the intended markets and claims.
+Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
 
 ## Version
 
-`0.9.0`
+`0.10.0`
