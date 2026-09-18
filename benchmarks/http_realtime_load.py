@@ -24,6 +24,24 @@ def percentile(values: list[float], p: float) -> float:
     return ordered[lo] * (1 - weight) + ordered[hi] * weight
 
 
+def stats(values: list[float], prefix: str) -> dict[str, float]:
+    if not values:
+        return {
+            f"{prefix}_mean_ms": 0.0,
+            f"{prefix}_p50_ms": 0.0,
+            f"{prefix}_p95_ms": 0.0,
+            f"{prefix}_p99_ms": 0.0,
+            f"{prefix}_max_ms": 0.0,
+        }
+    return {
+        f"{prefix}_mean_ms": round(sum(values) / len(values), 3),
+        f"{prefix}_p50_ms": round(percentile(values, 0.50), 3),
+        f"{prefix}_p95_ms": round(percentile(values, 0.95), 3),
+        f"{prefix}_p99_ms": round(percentile(values, 0.99), 3),
+        f"{prefix}_max_ms": round(max(values), 3),
+    }
+
+
 async def run(args):
     headers = {}
     if args.api_key:
@@ -33,7 +51,8 @@ async def run(args):
     for index in range(args.requests):
         queue.put_nowait(index)
 
-    latencies: list[float] = []
+    roundtrip_latencies: list[float] = []
+    server_latencies: list[float] = []
     errors = 0
     target_hits = 0
     timeout = httpx.Timeout(args.timeout)
@@ -57,15 +76,17 @@ async def run(args):
                         },
                     )
                     elapsed_ms = (time.perf_counter() - started) * 1000.0
-                    latencies.append(elapsed_ms)
+                    roundtrip_latencies.append(elapsed_ms)
                     if response.status_code != 200:
                         errors += 1
                     else:
                         payload = response.json()
+                        if isinstance(payload.get("latency_ms"), (int, float)):
+                            server_latencies.append(float(payload["latency_ms"]))
                         if payload.get("within_target"):
                             target_hits += 1
                 except Exception:
-                    latencies.append((time.perf_counter() - started) * 1000.0)
+                    roundtrip_latencies.append((time.perf_counter() - started) * 1000.0)
                     errors += 1
                 finally:
                     queue.task_done()
@@ -83,11 +104,8 @@ async def run(args):
         "errors": errors,
         "wall_seconds": round(wall_seconds, 6),
         "requests_per_second": round(args.requests / wall_seconds, 3),
-        "mean_ms": round(sum(latencies) / len(latencies), 3) if latencies else 0.0,
-        "p50_ms": round(percentile(latencies, 0.50), 3),
-        "p95_ms": round(percentile(latencies, 0.95), 3),
-        "p99_ms": round(percentile(latencies, 0.99), 3),
-        "max_ms": round(max(latencies), 3) if latencies else 0.0,
+        **stats(roundtrip_latencies, "roundtrip"),
+        **stats(server_latencies, "server"),
         "server_target_hit_rate": round(target_hits / args.requests, 6) if args.requests else 0.0,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
