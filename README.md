@@ -1,29 +1,36 @@
 # ROOOMTECH Decision Core
 
-ROOOMTECH Decision Core is an independently developed multimodal decision engine that turns unstructured inputs into typed, probabilistic, machine-usable decisions.
+ROOOMTECH Decision Core is an independently developed multimodal decision engine for typed, probabilistic, machine-usable decisions.
 
-Version 0.5 adds reusable **decision operations** so application code can call detection, routing, scoring, verification, ranking/search and probabilistic feature extraction directly. These sit on top of the same confidence, abstention, local-model and optional LLM-fallback system used by the core classifier.
+Version 0.6 adds arbitrary JSON Schema extraction, large parallel Map/Reduce with optional Redis-based distributed workers, NDJSON streaming, and a realtime WebSocket decision API.
 
-## Core features
+## Main capabilities
 
-- General multi-choice classification through `/v1/decide`
-- Property detection with explicit probability thresholds
-- Confidence-gated application routing
-- Rubric scoring with an expected numeric score
-- Multi-check policy / quality verification with `pass`, `fail` and `review`
-- Multilingual offline ranking/search using Unicode n-gram similarity
-- Optional authorized model-based reranking
-- Probabilistic feature extraction for downstream ML models
+- Classification, detection, routing, scoring and verification
+- Ranking/search and probabilistic feature extraction
+- Arbitrary JSON Schema structured extraction with validation
+- Local Map/Reduce over up to 100,000 items
+- Optional Redis-sharded distributed Map/Reduce workers
+- Streaming Map/Reduce results over NDJSON
+- WebSocket realtime decisions and HTTP NDJSON event streaming
 - Text, image, PDF and audio input
-- Image + text score fusion
-- Trainable local multilingual text classifier
-- CPU or CUDA GPU inference
-- Confidence, top-2 margin and normalized entropy gates
-- Abstain / human-review behavior
-- Local classifier first with optional OpenAI-compatible fallback
-- Accuracy, calibration and latency benchmarking
-- No raw upload persistence by default
+- Trainable local multilingual classifier with CPU/CUDA support
+- Confidence, margin, entropy, abstention and human-review gates
 - Personal-use-free / business-use-paid licensing
+
+## New endpoints
+
+```text
+POST /v1/extract
+POST /v1/mapreduce/run
+POST /v1/mapreduce/stream
+POST /v1/mapreduce/jobs
+GET  /v1/mapreduce/jobs/{job_id}
+WS   /v1/realtime/ws
+POST /v1/realtime/stream
+```
+
+See `docs/ADVANCED_PIPELINES.md` for examples and operational/security notes.
 
 ## Quick start
 
@@ -33,15 +40,17 @@ pip install -e '.[multimodal]'
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open `http://localhost:8000/docs`.
+For Redis workers:
 
-For text-only deployments, `pip install -e '.[ml]'` is sufficient.
+```bash
+pip install -e '.[distributed]'
+python -m app.mapreduce_worker
+```
 
-## Decision operations
-
-The higher-level endpoints are:
+## Existing decision operations
 
 ```text
+POST /v1/decide
 POST /v1/ops/detect
 POST /v1/ops/route
 POST /v1/ops/score
@@ -49,47 +58,17 @@ POST /v1/ops/verify
 POST /v1/ops/rank
 POST /v1/ops/search
 POST /v1/ops/features
+POST /v1/multimodal/decide
 ```
-
-They are designed so control flow remains ordinary application code while the decision layer returns probabilities and review signals. See `docs/DECISION_OPERATIONS.md`.
-
-Example routing request:
-
-```json
-{
-  "input": "ログインできません。パスワードを再設定したいです",
-  "provider": "rules",
-  "routes": [
-    {"id": "billing", "keywords": ["請求"]},
-    {"id": "account", "keywords": ["ログイン", "パスワード"]}
-  ]
-}
-```
-
-## Multimodal decisions
-
-`POST /v1/multimodal/decide` accepts text together with images, PDFs and audio. No third-party vision or speech model weights are bundled; deployers configure models they are authorized to use. See `docs/MULTIMODAL.md`.
-
-## Local model and benchmarks
-
-`POST /v1/models/train` trains the lightweight local text classifier. `POST /v1/benchmarks/local` measures accuracy, macro-F1, calibration, p50/p95/p99 latency and throughput. The repository benchmark data is independently authored synthetic data; production claims should use lawful held-out real data.
-
-## Dify and application integration
-
-Use ordinary HTTP Request nodes against the JSON endpoints. File inputs use the multipart `/v1/multimodal/decide` endpoint. The operation endpoints are intentionally small so they can also be called directly from code without adopting a workflow framework.
 
 ## Licensing
 
-Natural-person personal, non-business use is available under `LICENSE_PERSONAL.md`.
-
-Any use by or for a company, corporation, partnership, nonprofit, government body, educational institution, employer, client, sole proprietorship, or other business/professional activity requires a paid commercial license from ROOOMTECH. See `COMMERCIAL_LICENSE.md`.
-
-Commercial licensing: support@rooomtech.com
+Natural-person personal, non-business use is available under `LICENSE_PERSONAL.md`. Business, professional, organizational or institutional use requires a separate paid commercial license from ROOOMTECH. See `COMMERCIAL_LICENSE.md`.
 
 ## Independence
 
-ROOOMTECH Decision Core is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data or third-party UI assets. It is not marketed as a clone, successor or official compatible implementation of another vendor's product. See `NOTICE.md`, `BRAND_GUIDELINES.md` and `docs/LEGAL_DESIGN.md`.
+This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data or third-party UI assets, and it is not marketed as a clone or official compatible implementation of another vendor's product.
 
 ## Version
 
-`0.5.0`
+`0.6.0`

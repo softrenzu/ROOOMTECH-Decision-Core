@@ -1,7 +1,7 @@
 [project]
 name = "rooomtech-decision-core"
-version = "0.5.0"
-description = "Independent multimodal structured-decision API with reusable detection, routing, scoring, verification and ranking primitives"
+version = "0.6.0"
+description = "Independent multimodal decision API with structured extraction, Map/Reduce and realtime streaming"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -10,7 +10,8 @@ dependencies = [
   "pydantic>=2.8,<3",
   "python-dotenv>=1.0,<2",
   "python-multipart>=0.0.12,<1",
-  "cryptography>=43,<47"
+  "cryptography>=43,<47",
+  "jsonschema>=4.23,<5"
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ multimodal = [
   "transformers>=4.45,<5",
   "faster-whisper>=1.1,<2"
 ]
+distributed = ["redis>=5,<7"]
 dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1"]
 
 [tool.pytest.ini_options]
