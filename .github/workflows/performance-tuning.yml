@@ -1,0 +1,100 @@
+name: performance-tuning
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/performance-tuning.yml"
+
+jobs:
+  cpu-concurrency:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu_slots: [8, 16, 32]
+    env:
+      RTDC_FAST_WORKERS: "64"
+      RTDC_FAST_QUEUE_CAPACITY: "4096"
+      RTDC_FAST_MAX_QUEUE_WAIT_MS: "100"
+      RTDC_CPU_INFERENCE_SLOTS: ${{ matrix.cpu_slots }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - name: Install CPU PyTorch and project
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[dev]'
+      - name: Start API
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/rtdc-uvicorn.log 2>&1 &
+          echo $! > /tmp/rtdc-uvicorn.pid
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/rtdc-uvicorn.log
+          exit 1
+      - name: Train and create local classifier profile
+        run: |
+          python - <<'PY'
+          import json, httpx
+          account = ["ログインできません", "パスワードを忘れました", "アカウントに入れない", "認証に失敗します", "パスワードを変更したい", "ログイン方法を教えて", "アカウントを復旧したい", "サインインできません"]
+          billing = ["請求書を再発行してください", "料金の請求について確認したい", "支払い金額を確認したい", "請求が二重です", "領収書が欲しい", "決済について質問です", "料金明細をください", "請求先を変更したい"]
+          examples = []
+          for i in range(10):
+              examples.extend({"text": f"{text} {i}", "label": "account"} for text in account)
+              examples.extend({"text": f"{text} {i}", "label": "billing"} for text in billing)
+          with httpx.Client(base_url="http://127.0.0.1:8000", timeout=120.0) as client:
+              trained = client.post("/v1/models/train", json={
+                  "decision_id":"support_route",
+                  "model_name":"performance-tuning-local-route",
+                  "examples":examples,
+                  "feature_dim":1024,
+                  "ngram_min":1,
+                  "ngram_max":3,
+                  "epochs":20,
+                  "learning_rate":0.03,
+                  "batch_size":32,
+                  "validation_split":0.2,
+                  "device":"cpu"
+              })
+              trained.raise_for_status()
+              model_id = trained.json()["model_id"]
+              profile = client.post("/v1/realtime/profiles", json={
+                  "profile_id":"perf-local-route",
+                  "kind":"route",
+                  "target_ms":150,
+                  "prewarm":True,
+                  "request":{
+                      "provider":"local_classifier",
+                      "model_id":model_id,
+                      "min_confidence":0.5,
+                      "routes":[
+                          {"id":"billing","description":"billing and payment"},
+                          {"id":"account","description":"login and account"}
+                      ]
+                  }
+              })
+              profile.raise_for_status()
+              print(json.dumps({"training": trained.json(), "profile": profile.json()}, ensure_ascii=False, indent=2))
+          PY
+      - name: Measure 64-connection WebSocket workload
+        run: |
+          python benchmarks/websocket_realtime_load.py \
+            --ws-url ws://127.0.0.1:8000/v1/realtime/ws \
+            --profile-id perf-local-route \
+            --input 'ログインできなくてパスワードも忘れました' \
+            --requests 5000 \
+            --connections 64 \
+            | tee tuning-${{ matrix.cpu_slots }}.json
+      - name: Print runtime scheduling state
+        run: curl -fsS http://127.0.0.1:8000/v1/info | python -m json.tool
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-slots-${{ matrix.cpu_slots }}
+          path: tuning-${{ matrix.cpu_slots }}.json
