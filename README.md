@@ -2,7 +2,7 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision platform for typed, probabilistic, machine-usable decisions.
 
-Version 0.12 adds a reference enterprise control plane with projects, scoped API keys, daily quotas, metadata-only audit trails, and local-model promotion/rollback. It builds on the Guardrail Gateway, governed datasets, active learning, calibration and human review. Guardrail results are decision-support signals, not security, compliance, or factuality guarantees. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
+Version 0.13 adds a project authorization boundary for persisted datasets, human-review items and local models, plus project-authenticated WebSocket traffic. It builds on the enterprise projects/scoped-key control plane, Guardrail Gateway, governed datasets, active learning, calibration and human review. Guardrail results are decision-support signals, not security, compliance, or factuality guarantees. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
 
 ## Main capabilities
 
@@ -34,6 +34,8 @@ Version 0.12 adds a reference enterprise control plane with projects, scoped API
 - RAG citation/context screening with claim-level pass/review/fail and context injection checks
 - Enterprise projects, scoped API keys, daily quotas and metadata-only audit logging
 - Project model-promotion records and rollback history
+- Project ownership checks for datasets, reviews and local models
+- Project-authenticated WebSocket messages with per-message quota/revocation checks
 - Personal-use-free / business-use-paid licensing
 
 ## Decision Studio
@@ -52,9 +54,9 @@ The governed-dataset interface is available at:
 http://localhost:8000/datasets
 ```
 
-Set `RTDC_STUDIO_API_KEY` in `.env` for protected deployments. When it is blank, `RTDC_ADMIN_API_KEY` is used as the fallback.
+Set `RTDC_STUDIO_API_KEY` in `.env` for protected deployments. When it is blank, `RTDC_ADMIN_API_KEY` is used as the fallback. In enterprise project-key mode, management APIs fail closed if the required admin/studio secret is not configured.
 
-## Enterprise control plane
+## Enterprise control plane and tenant isolation
 
 The enterprise reference control plane is disabled by default. Enable project-key enforcement with:
 
@@ -67,27 +69,65 @@ RTDC_ENTERPRISE_KEY_PEPPER=<stable-secret-pepper>
 Administrative APIs:
 
 ```text
-POST  /v1/admin/projects
-GET   /v1/admin/projects
-GET   /v1/admin/projects/{project_id}
-PATCH /v1/admin/projects/{project_id}
-POST  /v1/admin/projects/{project_id}/keys
-GET   /v1/admin/projects/{project_id}/keys
+POST   /v1/admin/projects
+GET    /v1/admin/projects
+GET    /v1/admin/projects/{project_id}
+PATCH  /v1/admin/projects/{project_id}
+POST   /v1/admin/projects/{project_id}/keys
+GET    /v1/admin/projects/{project_id}/keys
 DELETE /v1/admin/projects/{project_id}/keys/{key_id}
-GET   /v1/admin/audit
-POST  /v1/admin/projects/{project_id}/models/promote
-GET   /v1/admin/projects/{project_id}/models
-POST  /v1/admin/projects/{project_id}/models/rollback
-GET   /v1/project/deployments
+GET    /v1/admin/audit
+POST   /v1/admin/projects/{project_id}/models/promote
+GET    /v1/admin/projects/{project_id}/models
+POST   /v1/admin/projects/{project_id}/models/rollback
+GET    /v1/project/deployments
+POST   /v1/project/predict
 ```
 
-Project keys are high-entropy credentials returned only once. The local control-plane database stores only a digest; an optional HMAC pepper can be configured separately. When enforcement is enabled, ordinary HTTP inference routes require `X-RTDC-Project-Key` with an appropriate `inference`, `guardrails`, or `realtime` scope. Daily project quotas return HTTP 429 after exhaustion.
+Project keys are high-entropy credentials returned only once. The local control-plane database stores only a digest; an optional HMAC pepper can be configured separately. When enforcement is enabled, ordinary HTTP inference routes require `X-RTDC-Project-Key` with the appropriate scope. Daily project quotas return HTTP 429 after exhaustion.
+
+Persisted tenant resources are registered to one project. Cross-project lookups for datasets, reviews and models are returned as not found rather than revealing the owner. Dataset training automatically registers the resulting model to the same project. Review-to-dataset import only considers reviews owned by that project. General local-classifier decisions carrying an explicit `model_id` inherit the authenticated tenant context and cannot invoke another project's registered model.
+
+Project-scoped dataset APIs:
+
+```text
+POST   /v1/project/datasets
+GET    /v1/project/datasets
+GET    /v1/project/datasets/{dataset_id}
+DELETE /v1/project/datasets/{dataset_id}
+POST   /v1/project/datasets/{dataset_id}/examples
+GET    /v1/project/datasets/{dataset_id}/examples
+POST   /v1/project/datasets/{dataset_id}/import-reviews
+POST   /v1/project/datasets/{dataset_id}/train
+GET    /v1/project/datasets/{dataset_id}/models
+```
+
+Project-scoped review and active-learning APIs:
+
+```text
+POST /v1/project/reviews
+GET  /v1/project/reviews
+GET  /v1/project/reviews/{review_id}
+POST /v1/project/reviews/{review_id}/resolve
+GET  /v1/project/reviews/export/training-examples
+GET  /v1/project/active-learning/candidates
+```
+
+Project-scoped model APIs:
+
+```text
+GET  /v1/project/models
+GET  /v1/project/models/{model_id}
+POST /v1/project/models/{model_id}/predict
+```
 
 Authenticated project inference requests create audit metadata containing project/key IDs, method, path, status, latency and request ID. Request bodies, prompts and outputs are deliberately not copied into the audit table.
 
-Model promotion records an active local model for a project, decision ID and environment, validates the model's decision ID, keeps version history, and supports rollback. Existing inference APIs still accept explicit model IDs; v0.12 deployment records do not automatically rewrite every inference request to the active alias.
+When enterprise enforcement is enabled, `/v1/realtime/ws` uses `X-RTDC-Project-Key` with the `realtime` scope. The key is checked at connection time and before every message, so revocation, expiry, project disablement and quota exhaustion affect long-lived connections. Each processed message receives the project tenant context and creates metadata-only audit information.
 
-Important isolation boundary: v0.12 project credentials, quota, audit and deployment records do **not** yet physically partition the existing dataset, review and model stores. Do not market v0.12 as hard SaaS tenant isolation. See `docs/ENTERPRISE_CONTROL_PLANE.md`.
+The v0.13 tenant boundary is an application authorization boundary between project credentials. The reference SQLite dataset/review/model stores remain shared rather than database-per-tenant. Production SaaS deployments should add managed encrypted storage and database-level tenant controls for defense in depth. Legacy realtime fast profiles are not yet tenant-owned objects and should not be treated as project-private without additional profile ownership or edge isolation.
+
+See `docs/ENTERPRISE_CONTROL_PLANE.md` and `docs/TENANT_ISOLATION.md`.
 
 ## Guardrail Gateway
 
@@ -109,7 +149,7 @@ See `docs/GUARDRAILS.md`.
 
 ## Governed datasets and active learning
 
-Create a dataset only after recording its source and affirming that the operator has the right to use it:
+Operator/admin dataset APIs remain available for maintenance and single-operator deployments:
 
 ```text
 POST /v1/datasets
@@ -171,6 +211,8 @@ Use `POST /v1/decide/governed` to combine a normal decision with a review policy
 A recommended threshold is an empirical result for the supplied held-out data, not a universal accuracy guarantee. Re-evaluate it when the model, dataset, domain or traffic distribution changes.
 
 ## Human review API
+
+Operator/admin review APIs:
 
 ```text
 POST /v1/reviews
@@ -286,8 +328,8 @@ Natural-person personal, non-business use is available under `LICENSE_PERSONAL.m
 
 This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data, copied UI assets or copied product documentation, and it is not marketed as a clone or official compatible implementation of another vendor's product.
 
-Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`; guardrail-specific boundaries and limitations are in `docs/GUARDRAILS.md`; enterprise control-plane boundaries are in `docs/ENTERPRISE_CONTROL_PLANE.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
+Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`; guardrail-specific boundaries and limitations are in `docs/GUARDRAILS.md`; enterprise and tenant boundaries are in `docs/ENTERPRISE_CONTROL_PLANE.md` and `docs/TENANT_ISOLATION.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
 
 ## Version
 
-`0.12.0`
+`0.13.0`
