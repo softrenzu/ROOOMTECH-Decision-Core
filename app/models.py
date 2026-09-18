@@ -142,3 +142,65 @@ class LocalPredictResponse(BaseModel):
     model_id: str
     device: str
     predictions: list[LocalPrediction]
+
+
+class BenchmarkExample(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    label: str = Field(min_length=1, max_length=200)
+
+
+class BenchmarkRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=100, pattern=MODEL_ID_PATTERN)
+    examples: list[BenchmarkExample] = Field(min_length=2, max_length=10_000)
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    warmup_runs: int = Field(default=2, ge=0, le=20)
+    repeat_runs: int = Field(default=5, ge=1, le=100)
+    batch_size: int = Field(default=32, ge=1, le=1000)
+    confidence_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    max_errors: int = Field(default=25, ge=0, le=200)
+
+
+class BenchmarkLabelMetrics(BaseModel):
+    label: str
+    precision: float
+    recall: float
+    f1: float
+    support: int
+
+
+class BenchmarkError(BaseModel):
+    index: int
+    expected: str
+    predicted: str
+    confidence: float
+
+
+class BenchmarkTiming(BaseModel):
+    cold_start_ms: float
+    mean_item_ms: float
+    p50_item_ms: float
+    p95_item_ms: float
+    p99_item_ms: float
+    throughput_items_per_second: float
+    timed_seconds: float
+
+
+class BenchmarkResponse(BaseModel):
+    model_id: str
+    device: str
+    examples: int
+    repeat_runs: int
+    batch_size: int
+    confidence_threshold: float
+    timings: BenchmarkTiming
+    accuracy: float
+    macro_precision: float
+    macro_recall: float
+    macro_f1: float
+    mean_confidence: float
+    expected_calibration_error: float
+    coverage_at_threshold: float
+    selective_accuracy_at_threshold: float | None
+    per_label: list[BenchmarkLabelMetrics]
+    confusion_matrix: dict[str, dict[str, int]]
+    errors: list[BenchmarkError] = Field(default_factory=list)
