@@ -2,7 +2,7 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision engine for typed, probabilistic, machine-usable decisions.
 
-Version 0.7 adds a prevalidated, network-free realtime fast path aimed at sub-150 ms decision workloads, plus repeatable load benchmarks for realtime and large Map/Reduce processing. The 150 ms value is a performance target, not a guaranteed latency claim; measure it on the deployment hardware and workload you intend to use.
+Version 0.8 adds bounded realtime scheduling, overload backpressure, accelerator-aware local inference, automatic CUDA micro-batching and explicit queue/execution latency reporting. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim. Measure it on the deployment hardware and workload you intend to use.
 
 ## Main capabilities
 
@@ -14,6 +14,10 @@ Version 0.7 adds a prevalidated, network-free realtime fast path aimed at sub-15
 - Streaming Map/Reduce results over NDJSON
 - WebSocket realtime decisions and HTTP NDJSON event streaming
 - Prevalidated realtime fast profiles using rules, local classifiers, local n-gram ranking, or heuristic extraction
+- Bounded realtime worker slots and queue capacity with overload backpressure
+- Accelerator-aware local inference: low-overhead CPU direct execution and CUDA micro-batching
+- Bounded GPU inference queue to avoid unlimited concurrent kernel launches and memory pressure
+- Per-request queue, execution and total latency reporting (`queue_ms`, `execution_ms`, `latency_ms`)
 - Per-request latency-budget reporting (`target_ms`, `within_target`)
 - Realtime burst benchmark with p50/p95/p99, throughput and target-hit rate
 - Map/Reduce load benchmark with repeated-run throughput and failure counts
@@ -64,6 +68,10 @@ Fast profiles intentionally reject `auto` and `openai_compatible` providers beca
 
 WebSocket clients can also send `kind: "fast"` with the same request body.
 
+The fast path uses a bounded scheduler. `RTDC_FAST_WORKERS` controls concurrent execution slots, `RTDC_FAST_QUEUE_CAPACITY` caps pending work, and `RTDC_FAST_MAX_QUEUE_WAIT_MS` caps queue waiting. HTTP fast-path requests return 429 when capacity is exhausted or queue wait exceeds the configured limit instead of allowing latency to grow without bound.
+
+For local classifiers, CPU and CUDA use different scheduling strategies. CPU requests use bounded direct execution without an artificial batching wait. CUDA requests are automatically micro-batched and pass through a bounded GPU execution gate. See `.env.example` and `docs/PERFORMANCE.md` for tuning controls.
+
 ## Performance benchmarks
 
 ```text
@@ -71,9 +79,11 @@ POST /v1/benchmarks/realtime-fast
 POST /v1/benchmarks/mapreduce-load
 ```
 
-The realtime benchmark measures a burst workload against an existing fast profile and reports p50/p95/p99 latency, calls/second, errors and the fraction of requests that met the profile target. The Map/Reduce benchmark actually executes the supplied job repeatedly and reports run latency, items/second and failures.
+The realtime benchmark measures a burst workload against an existing fast profile and reports p50/p95/p99 latency, calls/second, errors and the fraction of requests that met the profile target. Fast responses also separate time spent waiting for an execution slot from actual execution time.
 
-For transport-inclusive measurements against a deployed server, use `benchmarks/http_realtime_load.py`.
+The Map/Reduce benchmark actually executes the supplied job repeatedly and reports run latency, items/second and failures.
+
+For transport-inclusive measurements against a deployed server, use `benchmarks/http_realtime_load.py` or `benchmarks/websocket_realtime_load.py`.
 
 See `docs/PERFORMANCE.md` for methodology and interpretation.
 
@@ -123,4 +133,4 @@ This is an independent product. It does not include third-party proprietary sour
 
 ## Version
 
-`0.7.0`
+`0.8.0`
