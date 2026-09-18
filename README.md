@@ -2,7 +2,7 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision engine for typed, probabilistic, machine-usable decisions.
 
-Version 0.8 adds bounded realtime scheduling, overload backpressure, accelerator-aware local inference, automatic CUDA micro-batching and explicit queue/execution latency reporting. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim. Measure it on the deployment hardware and workload you intend to use.
+Version 0.8 adds bounded realtime scheduling, overload backpressure, accelerator-aware local inference, automatic CUDA micro-batching, optional Redis-backed profile sharing across server processes, and explicit queue/execution latency reporting. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim. Measure it on the deployment hardware and workload you intend to use.
 
 ## Main capabilities
 
@@ -15,6 +15,7 @@ Version 0.8 adds bounded realtime scheduling, overload backpressure, accelerator
 - WebSocket realtime decisions and HTTP NDJSON event streaming
 - Prevalidated realtime fast profiles using rules, local classifiers, local n-gram ranking, or heuristic extraction
 - Bounded realtime worker slots and queue capacity with overload backpressure
+- Optional Redis-backed fast-profile sharing across multiple Uvicorn/Gunicorn processes
 - Accelerator-aware local inference: low-overhead CPU direct execution and CUDA micro-batching
 - Bounded GPU inference queue to avoid unlimited concurrent kernel launches and memory pressure
 - Per-request queue, execution and total latency reporting (`queue_ms`, `execution_ms`, `latency_ms`)
@@ -72,6 +73,19 @@ The fast path uses a bounded scheduler. `RTDC_FAST_WORKERS` controls concurrent 
 
 For local classifiers, CPU and CUDA use different scheduling strategies. CPU requests use bounded direct execution without an artificial batching wait. CUDA requests are automatically micro-batched and pass through a bounded GPU execution gate. See `.env.example` and `docs/PERFORMANCE.md` for tuning controls.
 
+## Multiple application workers
+
+For CPU-heavy deployments, multiple server processes can be used. Enable the optional Redis registry so dynamically-created fast-profile definitions are visible to every worker:
+
+```bash
+pip install -e '.[distributed]'
+export RTDC_REDIS_URL=redis://127.0.0.1:6379/0
+export RTDC_FAST_PROFILE_REDIS_ENABLED=true
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+Each process compiles a shared profile locally on first use, so Redis is not consulted on every realtime request. Local-classifier model files must also be readable by each process. Multi-host deployments therefore need shared or synchronized model storage in addition to Redis profile sharing.
+
 ## Performance benchmarks
 
 ```text
@@ -116,7 +130,7 @@ pip install -e '.[multimodal]'
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-For Redis workers:
+For Redis Map/Reduce workers:
 
 ```bash
 pip install -e '.[distributed]'
