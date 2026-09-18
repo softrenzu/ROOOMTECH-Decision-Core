@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0 - 2026-09-19
+
+- Added an independently designed guardrail gateway for AI input, output and proposed tool-call screening
+- Added deterministic prompt-injection-like, sensitive-data, credential-like and risky-action screening signals
+- Added custom operator-defined policies with keyword rules and optional RTDC semantic detection
+- Added tool-call allowlists/blocklists and explicit-authorization gating for risky actions
+- Added local RAG citation/context screening with claim-level pass/review/fail results
+- Retrieved-context prompt-injection screening now routes unsafe context to review
+- Unsupported or weakly supported cited claims route to review rather than being treated as safe
+- Added separate guardrail API-key configuration with realtime/admin fallback
+- Guardrail requests are not persisted by the guardrail module
+- Added guardrail tests and independent-development documentation
+- Guardrail results are explicitly documented as decision-support signals, not security, compliance, or factuality guarantees
+
 ## 0.10.0 - 2026-09-19
 
 - Added governed dataset registry with required provenance and operator rights attestation
