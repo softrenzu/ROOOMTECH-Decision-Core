@@ -1,0 +1,152 @@
+name: performance-multiprocess
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/performance-multiprocess.yml"
+      - "app/profile_registry.py"
+      - "app/fastpath.py"
+
+jobs:
+  measure-multiprocess:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RTDC_REDIS_URL: redis://127.0.0.1:6379/14
+      RTDC_FAST_PROFILE_REDIS_ENABLED: "true"
+      RTDC_FAST_PROFILE_REDIS_KEY: rtdc:performance:multiprocess
+      RTDC_FAST_WORKERS: "32"
+      RTDC_FAST_QUEUE_CAPACITY: "4096"
+      RTDC_FAST_MAX_QUEUE_WAIT_MS: "100"
+      RTDC_CPU_INFERENCE_SLOTS: "8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - name: Install CPU PyTorch and Redis support
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[dev,distributed]'
+      - name: Train model and persist shared profile
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/rtdc-train.log 2>&1 &
+          echo $! > /tmp/rtdc.pid
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then break; fi
+            sleep 1
+          done
+          python - <<'PY'
+          import json, httpx
+          account = ["ログインできません", "パスワードを忘れました", "アカウントに入れない", "認証に失敗します", "パスワードを変更したい", "ログイン方法を教えて", "アカウントを復旧したい", "サインインできません"]
+          billing = ["請求書を再発行してください", "料金の請求について確認したい", "支払い金額を確認したい", "請求が二重です", "領収書が欲しい", "決済について質問です", "料金明細をください", "請求先を変更したい"]
+          examples = []
+          for i in range(10):
+              examples.extend({"text": f"{text} {i}", "label": "account"} for text in account)
+              examples.extend({"text": f"{text} {i}", "label": "billing"} for text in billing)
+          with httpx.Client(base_url="http://127.0.0.1:8000", timeout=120.0) as client:
+              trained = client.post("/v1/models/train", json={
+                  "decision_id":"support_route",
+                  "model_name":"performance-multiprocess-route",
+                  "examples":examples,
+                  "feature_dim":1024,
+                  "ngram_min":1,
+                  "ngram_max":3,
+                  "epochs":20,
+                  "learning_rate":0.03,
+                  "batch_size":32,
+                  "validation_split":0.2,
+                  "device":"cpu"
+              })
+              trained.raise_for_status()
+              model_id = trained.json()["model_id"]
+              profile = client.post("/v1/realtime/profiles", json={
+                  "profile_id":"perf-multi-route",
+                  "kind":"route",
+                  "target_ms":150,
+                  "prewarm":True,
+                  "request":{
+                      "provider":"local_classifier",
+                      "model_id":model_id,
+                      "min_confidence":0.5,
+                      "routes":[
+                          {"id":"billing","description":"billing and payment"},
+                          {"id":"account","description":"login and account"}
+                      ]
+                  }
+              })
+              profile.raise_for_status()
+              print(json.dumps({"training": trained.json(), "profile": profile.json()}, ensure_ascii=False, indent=2))
+          PY
+          kill "$(cat /tmp/rtdc.pid)"
+          sleep 2
+      - name: Measure 1, 2 and 4 server processes on the same runner
+        run: |
+          set -euo pipefail
+          for workers in 1 2 4; do
+            echo "=== starting ${workers} uvicorn worker(s) ==="
+            uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers "${workers}" > "/tmp/rtdc-${workers}.log" 2>&1 &
+            echo $! > /tmp/rtdc.pid
+            ready=0
+            for i in {1..60}; do
+              if curl -fsS http://127.0.0.1:8000/health >/dev/null; then ready=1; break; fi
+              sleep 1
+            done
+            if [ "$ready" -ne 1 ]; then cat "/tmp/rtdc-${workers}.log"; exit 1; fi
+
+            python benchmarks/websocket_realtime_load.py \
+              --ws-url ws://127.0.0.1:8000/v1/realtime/ws \
+              --profile-id perf-multi-route \
+              --input 'ログインできなくてパスワードも忘れました' \
+              --requests 256 \
+              --connections 64 > /dev/null
+
+            python benchmarks/websocket_realtime_load.py \
+              --ws-url ws://127.0.0.1:8000/v1/realtime/ws \
+              --profile-id perf-multi-route \
+              --input 'ログインできなくてパスワードも忘れました' \
+              --requests 5000 \
+              --connections 64 \
+              | tee "multiprocess-${workers}.json"
+
+            kill "$(cat /tmp/rtdc.pid)" || true
+            sleep 3
+          done
+      - name: Summarize results
+        run: |
+          python - <<'PY'
+          import json
+          rows = []
+          for workers in (1, 2, 4):
+              data = json.load(open(f"multiprocess-{workers}.json"))
+              rows.append({
+                  "workers": workers,
+                  "rps": data["requests_per_second"],
+                  "roundtrip_p95_ms": data["roundtrip_p95_ms"],
+                  "server_p95_ms": data["server_p95_ms"],
+                  "queue_p95_ms": data["queue_p95_ms"],
+                  "execution_p95_ms": data["execution_p95_ms"],
+                  "target_hit_rate": data["server_target_hit_rate"],
+                  "errors": data["errors"],
+              })
+          print(json.dumps(rows, ensure_ascii=False, indent=2))
+          PY
+      - name: Upload measured results
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-multiprocess
+          path: |
+            multiprocess-1.json
+            multiprocess-2.json
+            multiprocess-4.json
