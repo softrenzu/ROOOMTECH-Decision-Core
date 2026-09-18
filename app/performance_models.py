@@ -45,6 +45,8 @@ class FastDecisionResponse(BaseModel):
     error: str | None = None
     provider: str
     latency_ms: float
+    queue_ms: float = 0.0
+    execution_ms: float = 0.0
     target_ms: float
     within_target: bool
 
