@@ -2,8 +2,22 @@ import asyncio
 
 import pytest
 
-from app.ml.adaptive_classifier import AdaptiveLocalClassifierProvider
+from app.ml.adaptive_classifier import AdaptiveLocalClassifierProvider, fast_hashed_char_features
+from app.ml.local_classifier import hashed_char_features
 from app.models import LocalPrediction
+
+
+def test_fast_hash_matches_training_feature_vector():
+    samples = [
+        "ログインできなくてパスワードも忘れました",
+        "請求書を再発行してください",
+        "What time is check-in?",
+        "Wi-Fiが使えない / password reset",
+    ]
+    for text in samples:
+        expected = hashed_char_features(text, feature_dim=1024, ngram_min=1, ngram_max=3)
+        actual = fast_hashed_char_features(text, feature_dim=1024, ngram_min=1, ngram_max=3)
+        assert actual == pytest.approx(expected, abs=1e-12)
 
 
 @pytest.mark.asyncio
