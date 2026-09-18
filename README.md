@@ -2,7 +2,7 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision engine for typed, probabilistic, machine-usable decisions.
 
-Version 0.6 adds arbitrary JSON Schema extraction, large parallel Map/Reduce with optional Redis-based distributed workers, NDJSON streaming, and a realtime WebSocket decision API.
+Version 0.7 adds a prevalidated, network-free realtime fast path aimed at sub-150 ms decision workloads, plus repeatable load benchmarks for realtime and large Map/Reduce processing. The 150 ms value is a performance target, not a guaranteed latency claim; measure it on the deployment hardware and workload you intend to use.
 
 ## Main capabilities
 
@@ -13,14 +13,74 @@ Version 0.6 adds arbitrary JSON Schema extraction, large parallel Map/Reduce wit
 - Optional Redis-sharded distributed Map/Reduce workers
 - Streaming Map/Reduce results over NDJSON
 - WebSocket realtime decisions and HTTP NDJSON event streaming
+- Prevalidated realtime fast profiles using rules, local classifiers, local n-gram ranking, or heuristic extraction
+- Per-request latency-budget reporting (`target_ms`, `within_target`)
+- Realtime burst benchmark with p50/p95/p99, throughput and target-hit rate
+- Map/Reduce load benchmark with repeated-run throughput and failure counts
 - Text, image, PDF and audio input
 - Trainable local multilingual classifier with CPU/CUDA support
 - Confidence, margin, entropy, abstention and human-review gates
 - Personal-use-free / business-use-paid licensing
 
-## New endpoints
+## Fast realtime path
+
+Create a profile once so request validation and routing configuration are not rebuilt for every event:
 
 ```text
+POST   /v1/realtime/profiles
+GET    /v1/realtime/profiles
+DELETE /v1/realtime/profiles/{profile_id}
+POST   /v1/realtime/fast
+```
+
+Example profile:
+
+```json
+{
+  "profile_id": "support-route",
+  "kind": "route",
+  "target_ms": 150,
+  "request": {
+    "provider": "rules",
+    "routes": [
+      {"id": "billing", "keywords": ["請求", "invoice"]},
+      {"id": "account", "keywords": ["ログイン", "password"]}
+    ]
+  }
+}
+```
+
+Then send only the changing input:
+
+```json
+{
+  "profile_id": "support-route",
+  "input": "ログインできません",
+  "request_id": "req-001"
+}
+```
+
+Fast profiles intentionally reject `auto` and `openai_compatible` providers because those can make external network calls and make latency unpredictable. Local classifier models can be prewarmed when the profile is created.
+
+WebSocket clients can also send `kind: "fast"` with the same request body.
+
+## Performance benchmarks
+
+```text
+POST /v1/benchmarks/realtime-fast
+POST /v1/benchmarks/mapreduce-load
+```
+
+The realtime benchmark measures a burst workload against an existing fast profile and reports p50/p95/p99 latency, calls/second, errors and the fraction of requests that met the profile target. The Map/Reduce benchmark actually executes the supplied job repeatedly and reports run latency, items/second and failures.
+
+For transport-inclusive measurements against a deployed server, use `benchmarks/http_realtime_load.py`.
+
+See `docs/PERFORMANCE.md` for methodology and interpretation.
+
+## Other endpoints
+
+```text
+POST /v1/decide
 POST /v1/extract
 POST /v1/mapreduce/run
 POST /v1/mapreduce/stream
@@ -28,9 +88,15 @@ POST /v1/mapreduce/jobs
 GET  /v1/mapreduce/jobs/{job_id}
 WS   /v1/realtime/ws
 POST /v1/realtime/stream
+POST /v1/ops/detect
+POST /v1/ops/route
+POST /v1/ops/score
+POST /v1/ops/verify
+POST /v1/ops/rank
+POST /v1/ops/search
+POST /v1/ops/features
+POST /v1/multimodal/decide
 ```
-
-See `docs/ADVANCED_PIPELINES.md` for examples and operational/security notes.
 
 ## Quick start
 
@@ -47,20 +113,6 @@ pip install -e '.[distributed]'
 python -m app.mapreduce_worker
 ```
 
-## Existing decision operations
-
-```text
-POST /v1/decide
-POST /v1/ops/detect
-POST /v1/ops/route
-POST /v1/ops/score
-POST /v1/ops/verify
-POST /v1/ops/rank
-POST /v1/ops/search
-POST /v1/ops/features
-POST /v1/multimodal/decide
-```
-
 ## Licensing
 
 Natural-person personal, non-business use is available under `LICENSE_PERSONAL.md`. Business, professional, organizational or institutional use requires a separate paid commercial license from ROOOMTECH. See `COMMERCIAL_LICENSE.md`.
@@ -71,4 +123,4 @@ This is an independent product. It does not include third-party proprietary sour
 
 ## Version
 
-`0.6.0`
+`0.7.0`
