@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -9,6 +10,7 @@ import random
 import unicodedata
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -46,6 +48,12 @@ def hashed_char_features(text: str, feature_dim: int = 4096, ngram_min: int = 1,
     return vector
 
 
+@dataclass
+class _PendingInference:
+    text: str
+    future: asyncio.Future[dict]
+
+
 class LocalClassifierProvider:
     name = "local_classifier"
 
@@ -54,6 +62,21 @@ class LocalClassifierProvider:
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.default_device = os.getenv("RTDC_DEVICE", "auto").strip().lower() or "auto"
         self._cache: dict[tuple[str, str], tuple[dict, object]] = {}
+
+        self.inference_batch_size = max(1, int(os.getenv("RTDC_LOCAL_BATCH_MAX", "64")))
+        self.inference_batch_wait_ms = max(0.0, float(os.getenv("RTDC_LOCAL_BATCH_WAIT_MS", "0.5")))
+        self.inference_queue_capacity = max(1, int(os.getenv("RTDC_LOCAL_INFERENCE_QUEUE_CAPACITY", "4096")))
+        self.gpu_inference_slots = max(1, int(os.getenv("RTDC_GPU_INFERENCE_SLOTS", "1")))
+        cpu_default = min(8, max(1, os.cpu_count() or 1))
+        self.cpu_inference_slots = max(1, int(os.getenv("RTDC_CPU_INFERENCE_SLOTS", str(cpu_default))))
+        self._batch_lock = asyncio.Lock()
+        self._batch_queues: dict[tuple[str, tuple[str, ...], str], asyncio.Queue[_PendingInference]] = {}
+        self._batch_workers: dict[tuple[str, tuple[str, ...], str], asyncio.Task] = {}
+        self._gpu_gate = asyncio.Semaphore(self.gpu_inference_slots)
+        self._cpu_gate = asyncio.Semaphore(self.cpu_inference_slots)
+        self._batched_calls = 0
+        self._batched_items = 0
+        self._batch_rejections = 0
 
     @property
     def torch_available(self) -> bool:
@@ -83,6 +106,16 @@ class LocalClassifierProvider:
             "device": "unavailable",
             "device_name": None,
             "local_model_dir": str(self.model_dir),
+            "inference_batching": {
+                "max_batch_size": self.inference_batch_size,
+                "batch_wait_ms": self.inference_batch_wait_ms,
+                "queue_capacity_per_model": self.inference_queue_capacity,
+                "gpu_inference_slots": self.gpu_inference_slots,
+                "cpu_inference_slots": self.cpu_inference_slots,
+                "batches_executed": self._batched_calls,
+                "items_executed": self._batched_items,
+                "rejections": self._batch_rejections,
+            },
         }
         if not self.torch_available:
             return info
@@ -283,9 +316,8 @@ class LocalClassifierProvider:
             predictions.append(LocalPrediction(selected=selected, confidence=scores[selected], scores=scores))
         return device, predictions
 
-    def evaluate_one(self, model_id: str, text: str, allowed_choices: list[str]) -> dict:
-        _, predictions = self.predict_many(model_id, [text])
-        prediction = predictions[0]
+    @staticmethod
+    def _prediction_for_choices(prediction: LocalPrediction, allowed_choices: list[str] | tuple[str, ...]) -> dict:
         raw = {choice: float(prediction.scores.get(choice, 0.0)) for choice in allowed_choices}
         total = sum(raw.values())
         if total <= 0:
@@ -296,3 +328,81 @@ class LocalClassifierProvider:
             "evidence": [],
             "reason_codes": ["LOCAL_HASHED_CHAR_NGRAM", "NO_RAW_TEXT_STORED"],
         }
+
+    async def evaluate_one_async(self, model_id: str, text: str, allowed_choices: list[str]) -> dict:
+        """Micro-batch concurrent inference requests with bounded per-model queues.
+
+        Requests sharing a model, choice set and device are collected for a very short
+        window, then passed to one predict_many call. CUDA execution is serialized by a
+        configurable gate to avoid unbounded concurrent GPU launches and memory spikes.
+        """
+        device = self.resolve_device()
+        key = (model_id, tuple(allowed_choices), device)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict] = loop.create_future()
+        pending = _PendingInference(text=text, future=future)
+
+        async with self._batch_lock:
+            queue = self._batch_queues.get(key)
+            if queue is None:
+                queue = asyncio.Queue(maxsize=self.inference_queue_capacity)
+                self._batch_queues[key] = queue
+            try:
+                queue.put_nowait(pending)
+            except asyncio.QueueFull as exc:
+                self._batch_rejections += 1
+                raise RuntimeError("local inference queue is full") from exc
+            worker = self._batch_workers.get(key)
+            if worker is None or worker.done():
+                self._batch_workers[key] = asyncio.create_task(self._batch_worker(key))
+
+        return await future
+
+    async def _batch_worker(self, key: tuple[str, tuple[str, ...], str]) -> None:
+        model_id, allowed_choices, device = key
+        while True:
+            async with self._batch_lock:
+                queue = self._batch_queues.get(key)
+                if queue is None or queue.empty():
+                    self._batch_queues.pop(key, None)
+                    self._batch_workers.pop(key, None)
+                    return
+                first = queue.get_nowait()
+
+            batch = [first]
+            if self.inference_batch_wait_ms > 0:
+                await asyncio.sleep(self.inference_batch_wait_ms / 1000.0)
+
+            async with self._batch_lock:
+                queue = self._batch_queues.get(key)
+                if queue is not None:
+                    while len(batch) < self.inference_batch_size:
+                        try:
+                            batch.append(queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
+
+            gate = self._gpu_gate if device == "cuda" else self._cpu_gate
+            try:
+                async with gate:
+                    _, predictions = await asyncio.to_thread(
+                        self.predict_many,
+                        model_id,
+                        [item.text for item in batch],
+                        device,
+                    )
+                if len(predictions) != len(batch):
+                    raise RuntimeError("local classifier returned an unexpected batch size")
+                self._batched_calls += 1
+                self._batched_items += len(batch)
+                for item, prediction in zip(batch, predictions):
+                    if not item.future.done():
+                        item.future.set_result(self._prediction_for_choices(prediction, allowed_choices))
+            except Exception as exc:
+                for item in batch:
+                    if not item.future.done():
+                        item.future.set_exception(exc)
+
+    def evaluate_one(self, model_id: str, text: str, allowed_choices: list[str]) -> dict:
+        _, predictions = self.predict_many(model_id, [text])
+        return self._prediction_for_choices(predictions[0], allowed_choices)
