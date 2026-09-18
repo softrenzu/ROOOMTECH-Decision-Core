@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.12.0 - 2026-09-19
+
+- Added reference enterprise projects with enable/disable state and configurable daily request quotas
+- Added high-entropy project API keys with scopes, optional expiry and revocation
+- Raw project API keys are returned only once; only SHA-256/HMAC-SHA-256 digests are stored
+- Added optional HTTP project-key enforcement for inference, guardrail and realtime routes
+- Added per-project daily request quota enforcement with HTTP 429 on exhaustion
+- Added metadata-only audit logging for authenticated project requests without storing request bodies
+- Added local-model promotion records by project, decision ID and environment
+- Added model deployment version history and rollback to the most recent historical deployment
+- Added project-visible deployment lookup API
+- Added enterprise configuration and deployment/security documentation
+- Explicitly documented that v0.12 project controls are not yet hard multi-tenant data isolation for datasets/reviews/models
+- Guardrail auth now avoids unnecessary duplicate credentials when enterprise project-key enforcement is active
+
 ## 0.11.0 - 2026-09-19
 
 - Added an independently designed guardrail gateway for AI input, output and proposed tool-call screening
