@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0 - 2026-09-19
+
+- Added governed dataset registry with required provenance and operator rights attestation
+- Added explicit train/validation/test splits and duplicate-text prevention across splits
+- Added deterministic dataset fingerprints for reproducible model lineage
+- Added dataset-to-model training workflow using only the explicit training split
+- Added optional held-out validation/test benchmarking after training
+- Added model-lineage records containing the dataset fingerprint, training metadata and evaluation metrics
+- Added resolved Human Review Queue import into governed datasets
+- Added uncertainty-prioritized active-learning candidate API
+- Added dataset retention and purge controls
+- Added dataset governance documentation and a dedicated local dataset store configuration
+- Kept the independent-development boundary: no third-party proprietary service outputs are required or collected for training
+
 ## 0.9.0 - 2026-09-19
 
 - Added independently designed ROOOMTECH Decision Studio at `/studio`
