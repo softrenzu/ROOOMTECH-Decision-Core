@@ -1,0 +1,17 @@
+{
+  "decision_id": "guest_intent",
+  "model_name": "japanese_guest_intent_demo",
+  "device": "auto",
+  "epochs": 50,
+  "examples": [
+    {"text": "チェックインは何時からですか", "label": "checkin_question"},
+    {"text": "入室できる時間を教えてください", "label": "checkin_question"},
+    {"text": "鍵の受け取り方法を教えて", "label": "checkin_question"},
+    {"text": "お湯が出ません", "label": "equipment_problem"},
+    {"text": "エアコンが動かないです", "label": "equipment_problem"},
+    {"text": "Wi-Fiにつながりません", "label": "equipment_problem"},
+    {"text": "部屋が汚いので返金してください", "label": "complaint"},
+    {"text": "説明と違います。返金を希望します", "label": "complaint"},
+    {"text": "清掃されていなくて困っています", "label": "complaint"}
+  ]
+}

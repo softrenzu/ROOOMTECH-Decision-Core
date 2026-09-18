@@ -11,6 +11,11 @@ This document records the product-separation rules used for ROOOMTECH Decision C
 5. Keep product naming, package naming, domains and logos distinct from third-party marks.
 6. Do not claim official compatibility, endorsement, succession or equivalence without written permission and verified evidence.
 7. Only connect external APIs or models through interfaces that the deployer is authorized to use.
+8. Local classifier training must use data that the operator has the right to process and use for training.
+
+## Local model design
+
+The v0.2 local classifier uses ROOOMTECH code for Unicode character n-gram feature hashing and a small linear neural classifier. It is trained only from operator-supplied examples. It does not require a proprietary third-party decision-model API, output stream, prompt set or model weights.
 
 ## Commercial licensing model
 
@@ -22,7 +27,6 @@ This document records the product-separation rules used for ROOOMTECH Decision C
 
 Before a public commercial launch:
 
-- rename the GitHub repository to `ROOOMTECH-Decision-Core`;
 - run a trademark clearance search for the final product name in intended markets;
 - have Japanese counsel review the personal and commercial license terms;
 - run dependency/license scanning;
