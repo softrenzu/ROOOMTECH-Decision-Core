@@ -1,8 +1,8 @@
 # ROOOMTECH Decision Core
 
-ROOOMTECH Decision Core is an independently developed multimodal decision engine for typed, probabilistic, machine-usable decisions.
+ROOOMTECH Decision Core is an independently developed multimodal decision platform for typed, probabilistic, machine-usable decisions.
 
-Version 0.8 adds bounded realtime scheduling, overload backpressure, accelerator-aware local inference, automatic CUDA micro-batching, optional Redis-backed profile sharing across server processes, and explicit queue/execution latency reporting. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim. Measure it on the deployment hardware and workload you intend to use.
+Version 0.9 adds an independently designed Decision Studio, empirical calibration, confidence-threshold recommendations, governed decisions and a privacy-conscious human-review queue. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
 
 ## Main capabilities
 
@@ -19,13 +19,75 @@ Version 0.8 adds bounded realtime scheduling, overload backpressure, accelerator
 - Accelerator-aware local inference: low-overhead CPU direct execution and CUDA micro-batching
 - Bounded GPU inference queue to avoid unlimited concurrent kernel launches and memory pressure
 - Per-request queue, execution and total latency reporting (`queue_ms`, `execution_ms`, `latency_ms`)
-- Per-request latency-budget reporting (`target_ms`, `within_target`)
 - Realtime burst benchmark with p50/p95/p99, throughput and target-hit rate
-- Map/Reduce load benchmark with repeated-run throughput and failure counts
 - Text, image, PDF and audio input
 - Trainable local multilingual classifier with CPU/CUDA support
 - Confidence, margin, entropy, abstention and human-review gates
+- Decision Studio for configuring and testing governed decisions
+- Calibration Studio with ECE, Brier score, reliability bins and threshold/coverage curves
+- Human Review Queue with retention controls and active-learning export
 - Personal-use-free / business-use-paid licensing
+
+## Decision Studio
+
+Start the API and open:
+
+```text
+http://localhost:8000/studio
+```
+
+The Studio is a ROOOMTECH-designed interface. It does not reproduce a third-party console or playground. It can configure and run a decision, route uncertain results to review, calculate thresholds from held-out outcomes, resolve human-review items, and export operator-approved training examples.
+
+Set `RTDC_STUDIO_API_KEY` in `.env` for protected deployments. When it is blank, `RTDC_ADMIN_API_KEY` is used as the fallback.
+
+## Governed decisions
+
+Use `POST /v1/decide/governed` to combine a normal decision with a review policy:
+
+```json
+{
+  "decision": {
+    "input": "ログインできません",
+    "provider": "rules",
+    "decisions": [
+      {
+        "id": "support_route",
+        "question": "Which support route should handle this request?",
+        "choices": ["account", "billing", "other"],
+        "keywords": {"account": ["ログイン", "パスワード"], "billing": ["請求"]}
+      }
+    ]
+  },
+  "policy": {
+    "review_below_confidence": 0.80,
+    "review_if_requires_review": true,
+    "review_if_abstained": true,
+    "store_input": false,
+    "retention_days": 30
+  }
+}
+```
+
+`store_input` defaults to `false`. When false, raw input is not persisted in the review database; a SHA-256 digest is retained for correlation. Enable raw-input storage only when the operator has an appropriate legal basis, security controls and retention policy.
+
+## Calibration Studio API
+
+`POST /v1/evals/calibrate` consumes held-out outcomes owned by the operator and reports accuracy, mean confidence, expected calibration error, Brier score, reliability bins, a threshold/coverage curve and the widest-coverage observed threshold satisfying the requested empirical error rate and minimum sample count.
+
+A recommended threshold is an empirical result for the supplied held-out data, not a universal accuracy guarantee. Re-evaluate it when the model, dataset, domain or traffic distribution changes.
+
+## Human review API
+
+```text
+POST /v1/reviews
+GET  /v1/reviews
+GET  /v1/reviews/{review_id}
+POST /v1/reviews/{review_id}/resolve
+POST /v1/reviews/purge-expired
+GET  /v1/reviews/export/training-examples
+```
+
+The built-in SQLite queue is intended for single-node and evaluation deployments. Enterprise/multi-node deployments should place the review workflow on an approved managed database with organizational access controls, backups and retention enforcement.
 
 ## Fast realtime path
 
@@ -55,19 +117,7 @@ Example profile:
 }
 ```
 
-Then send only the changing input:
-
-```json
-{
-  "profile_id": "support-route",
-  "input": "ログインできません",
-  "request_id": "req-001"
-}
-```
-
 Fast profiles intentionally reject `auto` and `openai_compatible` providers because those can make external network calls and make latency unpredictable. Local classifier models can be prewarmed when the profile is created.
-
-WebSocket clients can also send `kind: "fast"` with the same request body.
 
 The fast path uses a bounded scheduler. `RTDC_FAST_WORKERS` controls concurrent execution slots, `RTDC_FAST_QUEUE_CAPACITY` caps pending work, and `RTDC_FAST_MAX_QUEUE_WAIT_MS` caps queue waiting. HTTP fast-path requests return 429 when capacity is exhausted or queue wait exceeds the configured limit instead of allowing latency to grow without bound.
 
@@ -84,7 +134,7 @@ export RTDC_FAST_PROFILE_REDIS_ENABLED=true
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-Each process compiles a shared profile locally on first use, so Redis is not consulted on every realtime request. Local-classifier model files must also be readable by each process. Multi-host deployments therefore need shared or synchronized model storage in addition to Redis profile sharing.
+Each process compiles a shared profile locally on first use. Redis Pub/Sub invalidates stale process-local copies when a shared profile changes or is deleted. Local-classifier model files must also be readable by each process.
 
 ## Performance benchmarks
 
@@ -93,11 +143,7 @@ POST /v1/benchmarks/realtime-fast
 POST /v1/benchmarks/mapreduce-load
 ```
 
-The realtime benchmark measures a burst workload against an existing fast profile and reports p50/p95/p99 latency, calls/second, errors and the fraction of requests that met the profile target. Fast responses also separate time spent waiting for an execution slot from actual execution time.
-
-The Map/Reduce benchmark actually executes the supplied job repeatedly and reports run latency, items/second and failures.
-
-For transport-inclusive measurements against a deployed server, use `benchmarks/http_realtime_load.py` or `benchmarks/websocket_realtime_load.py`.
+The realtime benchmark measures a burst workload against an existing fast profile and reports p50/p95/p99 latency, calls/second, errors and target-hit rate. For transport-inclusive measurements against a deployed server, use `benchmarks/http_realtime_load.py` or `benchmarks/websocket_realtime_load.py`.
 
 See `docs/PERFORMANCE.md` for methodology and interpretation.
 
@@ -105,6 +151,7 @@ See `docs/PERFORMANCE.md` for methodology and interpretation.
 
 ```text
 POST /v1/decide
+POST /v1/decide/governed
 POST /v1/extract
 POST /v1/mapreduce/run
 POST /v1/mapreduce/stream
@@ -141,10 +188,12 @@ python -m app.mapreduce_worker
 
 Natural-person personal, non-business use is available under `LICENSE_PERSONAL.md`. Business, professional, organizational or institutional use requires a separate paid commercial license from ROOOMTECH. See `COMMERCIAL_LICENSE.md`.
 
-## Independence
+## Independent development
 
-This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data or third-party UI assets, and it is not marketed as a clone or official compatible implementation of another vendor's product.
+This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data, copied UI assets or copied product documentation, and it is not marketed as a clone or official compatible implementation of another vendor's product.
+
+Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims. Commercial launch should include trademark and counsel review for the intended markets and claims.
 
 ## Version
 
-`0.8.0`
+`0.9.0`
