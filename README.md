@@ -2,12 +2,14 @@
 
 ROOOMTECH Decision Core is an independently developed multimodal decision platform for typed, probabilistic, machine-usable decisions.
 
-Version 0.13 adds a project authorization boundary for persisted datasets, human-review items and local models, plus project-authenticated WebSocket traffic. It builds on the enterprise projects/scoped-key control plane, Guardrail Gateway, governed datasets, active learning, calibration and human review. Guardrail results are decision-support signals, not security, compliance, or factuality guarantees. The default fast-profile target remains 150 ms; it is a performance target, not a guaranteed latency claim.
+Version 0.14 adds a local many-to-many Semantic Matrix and a protected Website Intelligence audit that crawls one public origin, rebuilds the observed internal-link graph, flags fetched broken links and proposes missing internal links without sending page text to an external decision service. It builds on v0.13 project authorization for datasets, reviews, models and WebSocket traffic. Guardrail and website recommendations are decision-support signals, not security, compliance, factuality, SEO-ranking or latency guarantees.
 
 ## Main capabilities
 
 - Classification, detection, routing, scoring and verification
 - Ranking/search and probabilistic feature extraction
+- Local many-to-many Semantic Matrix for high-cardinality candidate generation
+- Protected same-origin Website Intelligence crawl and internal-link audit
 - Arbitrary JSON Schema structured extraction with validation
 - Local Map/Reduce over up to 100,000 items
 - Optional Redis-sharded distributed Map/Reduce workers
@@ -37,6 +39,28 @@ Version 0.13 adds a project authorization boundary for persisted datasets, human
 - Project ownership checks for datasets, reviews and local models
 - Project-authenticated WebSocket messages with per-message quota/revocation checks
 - Personal-use-free / business-use-paid licensing
+
+## Semantic Matrix and Website Intelligence
+
+Use `POST /v1/ops/matrix` for high-cardinality many-to-many semantic candidate generation. It uses deterministic sparse Unicode character n-gram features and an inverted index, makes no external model call, and reports both logical pair count and the smaller number of candidate pairs that actually shared features.
+
+Typical uses include internal-link discovery, lead/account matching, candidate/role matching, catalog normalization, RAG prefiltering and support-article recommendation.
+
+Website Intelligence is deliberately disabled by default because it performs server-side HTTP(S) fetching. Enable it only for authorized crawling:
+
+```bash
+RTDC_WEB_INTELLIGENCE_ENABLED=true
+```
+
+Outside enterprise mode, `RTDC_ADMIN_API_KEY` must also be configured. In enterprise project-key mode, use a project key with the dedicated `web` scope.
+
+```text
+POST /v1/project/web/audit
+```
+
+The crawler is same-origin only, rejects private/loopback/link-local/reserved destinations, rejects URL credentials and non-80/443 ports, follows only same-origin redirects, respects `robots.txt` by default, does not execute JavaScript, bounds page count/bytes/concurrency/timeouts, and does not persist fetched page bodies. Recommendations are local candidate-generation signals and should be reviewed before publishing changes.
+
+See `docs/WEB_INTELLIGENCE.md`.
 
 ## Decision Studio
 
@@ -84,7 +108,7 @@ GET    /v1/project/deployments
 POST   /v1/project/predict
 ```
 
-Project keys are high-entropy credentials returned only once. The local control-plane database stores only a digest; an optional HMAC pepper can be configured separately. When enforcement is enabled, ordinary HTTP inference routes require `X-RTDC-Project-Key` with the appropriate scope. Daily project quotas return HTTP 429 after exhaustion.
+Project keys are high-entropy credentials returned only once. The local control-plane database stores only a digest; an optional HMAC pepper can be configured separately. When enforcement is enabled, ordinary HTTP inference routes require `X-RTDC-Project-Key` with the appropriate scope. Available project scopes include `inference`, `guardrails`, `realtime`, `datasets`, `reviews`, `models`, and `web`. Daily project quotas return HTTP 429 after exhaustion.
 
 Persisted tenant resources are registered to one project. Cross-project lookups for datasets, reviews and models are returned as not found rather than revealing the owner. Dataset training automatically registers the resulting model to the same project. Review-to-dataset import only considers reviews owned by that project. General local-classifier decisions carrying an explicit `model_id` inherit the authenticated tenant context and cannot invoke another project's registered model.
 
@@ -125,7 +149,7 @@ Authenticated project inference requests create audit metadata containing projec
 
 When enterprise enforcement is enabled, `/v1/realtime/ws` uses `X-RTDC-Project-Key` with the `realtime` scope. The key is checked at connection time and before every message, so revocation, expiry, project disablement and quota exhaustion affect long-lived connections. Each processed message receives the project tenant context and creates metadata-only audit information.
 
-The v0.13 tenant boundary is an application authorization boundary between project credentials. The reference SQLite dataset/review/model stores remain shared rather than database-per-tenant. Production SaaS deployments should add managed encrypted storage and database-level tenant controls for defense in depth. Legacy realtime fast profiles are not yet tenant-owned objects and should not be treated as project-private without additional profile ownership or edge isolation.
+The v0.14 tenant boundary is an application authorization boundary between project credentials. The reference SQLite dataset/review/model stores remain shared rather than database-per-tenant. Production SaaS deployments should add managed encrypted storage and database-level tenant controls for defense in depth. Legacy realtime fast profiles are not yet tenant-owned objects and should not be treated as project-private without additional profile ownership or edge isolation.
 
 See `docs/ENTERPRISE_CONTROL_PLANE.md` and `docs/TENANT_ISOLATION.md`.
 
@@ -302,6 +326,8 @@ POST /v1/ops/verify
 POST /v1/ops/rank
 POST /v1/ops/search
 POST /v1/ops/features
+POST /v1/ops/matrix
+POST /v1/project/web/audit
 POST /v1/multimodal/decide
 ```
 
@@ -328,8 +354,8 @@ Natural-person personal, non-business use is available under `LICENSE_PERSONAL.m
 
 This is an independent product. It does not include third-party proprietary source code, prompts, private APIs, decision-service outputs, copied benchmark data, copied UI assets or copied product documentation, and it is not marketed as a clone or official compatible implementation of another vendor's product.
 
-Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`; guardrail-specific boundaries and limitations are in `docs/GUARDRAILS.md`; enterprise and tenant boundaries are in `docs/ENTERPRISE_CONTROL_PLANE.md` and `docs/TENANT_ISOLATION.md`. These engineering controls reduce avoidable intellectual-property and contractual risk, but they are not a guarantee against claims.
+Development separation rules are documented in `docs/LEGAL_DESIGN.md` and `docs/INDEPENDENT_PRODUCT_DEVELOPMENT.md`. Dataset-specific controls are documented in `docs/DATASET_GOVERNANCE.md`; guardrail-specific boundaries and limitations are in `docs/GUARDRAILS.md`; enterprise and tenant boundaries are in `docs/ENTERPRISE_CONTROL_PLANE.md` and `docs/TENANT_ISOLATION.md`; website fetching and semantic-matrix boundaries are in `docs/WEB_INTELLIGENCE.md`. These engineering controls reduce avoidable intellectual-property, contractual and security risk, but they are not a guarantee against claims.
 
 ## Version
 
-`0.13.0`
+`0.14.0`
