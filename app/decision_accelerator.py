@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.engine import DecisionEngine
 from app.models import DecisionResult, DecisionSpec
+from app.parallel_head_model import ParallelHeadModelProvider, ParallelHeadPredictRequest
 
 
 ID_PATTERN = r"^[A-Za-z0-9_.-]+$"
@@ -67,10 +68,7 @@ class JudgmentSpec(BaseModel):
     def decision_spec(self) -> DecisionSpec:
         if self.kind == "boolean":
             choices = ["true", "false"]
-            keywords = {
-                "true": self.true_keywords,
-                "false": self.false_keywords,
-            }
+            keywords = {"true": self.true_keywords, "false": self.false_keywords}
         elif self.kind == "categorical":
             choices = [item.id for item in self.options]
             keywords = {item.id: item.keywords for item in self.options}
@@ -94,6 +92,7 @@ class DecisionAcceleratorRequest(BaseModel):
     state: str = Field(min_length=1, max_length=200_000)
     judgments: list[JudgmentSpec] = Field(min_length=1, max_length=64)
     routing_mode: RoutingMode = "auto"
+    parallel_model_id: str | None = Field(default=None, max_length=100, pattern=ID_PATTERN)
     max_external_judgments: int = Field(default=16, ge=0, le=64)
     external_weight: float = Field(default=0.85, ge=0.0, le=1.0)
     deadline_ms: int | None = Field(default=None, ge=10, le=120_000)
@@ -127,6 +126,7 @@ class JudgmentResult(BaseModel):
 
 class AcceleratorRoutingStats(BaseModel):
     judgment_count: int
+    parallel_model_heads: int
     local_model_tasks: int
     rules_only_baselines: int
     locally_resolved: int
@@ -136,7 +136,7 @@ class AcceleratorRoutingStats(BaseModel):
     external_timeout: bool
     review_count: int
     state_chars: int
-    execution_shape: str = "parallel_local_batched_external"
+    execution_shape: str = "shared_encoder_parallel_heads_then_batched_external"
 
 
 class DecisionAcceleratorResponse(BaseModel):
@@ -148,13 +148,15 @@ class DecisionAcceleratorResponse(BaseModel):
 class DecisionAccelerator:
     """Machine-oriented typed judgments with bounded automatic LLM fallback.
 
-    Local classifiers are evaluated concurrently. Rules cover zero-model cases.
-    In auto mode only uncertain baselines are batched into at most one configured
-    external-model request. The API never exposes chain-of-thought.
+    An optional RTDC-owned shared-encoder model can emit many probability heads in
+    one forward pass. Remaining per-judgment local models run concurrently. Only
+    uncertain judgments are eligible for one bounded external-model batch. The API
+    never exposes chain-of-thought.
     """
 
-    def __init__(self, engine: DecisionEngine):
+    def __init__(self, engine: DecisionEngine, parallel_models: ParallelHeadModelProvider | None = None):
         self.engine = engine
+        self.parallel_models = parallel_models
 
     @staticmethod
     def _priority(result: DecisionResult) -> float:
@@ -189,13 +191,35 @@ class DecisionAccelerator:
             reason_codes=result.reason_codes,
         )
 
-    async def evaluate(self, request: DecisionAcceleratorRequest) -> DecisionAcceleratorResponse:
+    async def evaluate(self, request: DecisionAcceleratorRequest, project_id: str = "local") -> DecisionAcceleratorResponse:
         started = time.perf_counter()
         specs = [judgment.decision_spec() for judgment in request.judgments]
         by_id = {judgment.id: judgment for judgment in request.judgments}
         rules_data = self.engine.rules.evaluate(request.state, specs)
+        parallel_data: dict[str, dict] = {}
         local_data: dict[str, dict] = {}
+        parallel_model_heads = 0
         local_model_tasks = 0
+
+        if request.routing_mode != "external_only" and request.parallel_model_id:
+            if self.parallel_models is None:
+                raise ValueError("parallel_model_id was supplied but the parallel model provider is unavailable")
+            summary = self.parallel_models.get_model(project_id, request.parallel_model_id)
+            model_head_ids = {head.id for head in summary.heads}
+            matching = [spec.id for spec in specs if spec.id in model_head_ids]
+            if matching:
+                prediction = await self.parallel_models.predict_async(
+                    project_id,
+                    request.parallel_model_id,
+                    ParallelHeadPredictRequest(text=request.state, heads=matching),
+                )
+                parallel_model_heads = len(prediction.predictions)
+                for item in prediction.predictions:
+                    parallel_data[item.id] = {
+                        "scores": item.probabilities,
+                        "evidence": [],
+                        "reason_codes": ["PARALLEL_SHARED_ENCODER", "CALIBRATED_HEAD_TEMPERATURE"],
+                    }
 
         async def local_one(spec: DecisionSpec):
             try:
@@ -204,22 +228,29 @@ class DecisionAccelerator:
             except Exception:
                 return spec.id, None
 
-        local_specs = [spec for spec in specs if spec.model_id]
+        local_specs = [spec for spec in specs if spec.id not in parallel_data and spec.model_id]
         if request.routing_mode != "external_only" and local_specs:
             local_model_tasks = len(local_specs)
             rows = await asyncio.gather(*(local_one(spec) for spec in local_specs))
             local_data = {spec_id: data for spec_id, data in rows if data is not None}
 
         baseline_results: dict[str, DecisionResult] = {}
+        baseline_raw: dict[str, dict] = {}
         rules_only = 0
         for spec in specs:
             if request.routing_mode == "external_only":
                 continue
-            data = local_data.get(spec.id)
-            provider = "local_classifier" if data is not None else "rules"
-            if data is None:
+            if spec.id in parallel_data:
+                data = parallel_data[spec.id]
+                provider = "parallel_head_model"
+            elif spec.id in local_data:
+                data = local_data[spec.id]
+                provider = "local_classifier"
+            else:
                 data = rules_data[spec.id]
+                provider = "rules"
                 rules_only += 1
+            baseline_raw[spec.id] = data
             baseline_results[spec.id] = self.engine._result(spec, data, provider)
 
         unresolved: list[DecisionSpec]
@@ -265,22 +296,21 @@ class DecisionAccelerator:
                 if data is not None:
                     decision = self.engine._result(spec, data, "openai_compatible")
                 else:
-                    # Fail closed: no external answer becomes a uniform review result.
                     decision = self.engine._result(spec, {"scores": {}}, "external_unavailable")
                 final_results.append(self._convert(by_id[spec.id], decision, spec.id in external_ids))
                 continue
 
             baseline = baseline_results[spec.id]
             if spec.id in external_data:
-                baseline_raw = local_data.get(spec.id, rules_data[spec.id])
+                local_raw = baseline_raw[spec.id]
                 merged = {
                     "scores": self.engine._blend(
                         spec,
-                        baseline_raw.get("scores", {}),
+                        local_raw.get("scores", {}),
                         external_data[spec.id].get("scores", {}),
                         model_weight=request.external_weight,
                     ),
-                    "evidence": list(dict.fromkeys(external_data[spec.id].get("evidence", []) + baseline_raw.get("evidence", [])))[:3],
+                    "evidence": list(dict.fromkeys(external_data[spec.id].get("evidence", []) + local_raw.get("evidence", [])))[:3],
                     "reason_codes": ["EXTERNAL_FALLBACK"] + external_data[spec.id].get("reason_codes", []),
                 }
                 decision = self.engine._result(spec, merged, f"accelerated_{baseline.provider}_external")
@@ -288,14 +318,13 @@ class DecisionAccelerator:
                 decision = baseline
             final_results.append(self._convert(by_id[spec.id], decision, spec.id in external_ids))
 
-        locally_resolved = sum(
-            1 for result in baseline_results.values() if not result.requires_review
-        )
+        locally_resolved = sum(1 for result in baseline_results.values() if not result.requires_review)
         review_count = sum(1 for result in final_results if result.requires_review)
         return DecisionAcceleratorResponse(
             results=final_results,
             routing=AcceleratorRoutingStats(
                 judgment_count=len(specs),
+                parallel_model_heads=parallel_model_heads,
                 local_model_tasks=local_model_tasks,
                 rules_only_baselines=rules_only,
                 locally_resolved=locally_resolved,
