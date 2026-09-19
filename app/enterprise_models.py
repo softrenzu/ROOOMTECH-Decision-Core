@@ -8,7 +8,7 @@ from app.models import LocalPrediction
 
 
 ID_PATTERN = r"^[A-Za-z0-9_.-]+$"
-ProjectScope = Literal["inference", "guardrails", "realtime", "datasets", "reviews", "models", "web"]
+ProjectScope = Literal["inference", "guardrails", "realtime", "datasets", "reviews", "models", "web", "graphs"]
 DeploymentEnvironment = Literal["development", "staging", "production"]
 
 
@@ -36,7 +36,7 @@ class ProjectSummary(BaseModel):
 
 class ProjectKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
-    scopes: list[ProjectScope] = Field(default_factory=lambda: ["inference"], min_length=1, max_length=7)
+    scopes: list[ProjectScope] = Field(default_factory=lambda: ["inference"], min_length=1, max_length=8)
     expires_days: int | None = Field(default=None, ge=1, le=3650)
 
     @model_validator(mode="after")
