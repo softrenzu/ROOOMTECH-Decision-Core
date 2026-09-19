@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.0 - 2026-09-19
+
+- Added a local many-to-many Semantic Matrix for high-cardinality candidate generation without external model calls
+- Added sparse Unicode character n-gram signatures, deterministic hashing and an inverted feature index
+- Added explicit logical-pair bounds to prevent accidental quadratic workloads
+- Added a protected same-origin Website Intelligence crawler and internal-link graph audit
+- Added internal-link recommendations using the local Semantic Matrix, including literal target-anchor-presence signals
+- Added fetched broken-link detection, orphan-page detection and crawl/page/link telemetry
+- Website crawling is disabled by default and requires an admin secret outside enterprise mode
+- Added a dedicated enterprise `web` project-key scope with quota/audit integration
+- Added SSRF-oriented controls: public-address validation, same-origin-only redirects/crawl, ports 80/443 only, no URL credentials, bounded bytes/pages/concurrency/timeouts and robots.txt support
+- Fetched page bodies remain in memory for the request and are not persisted by the website-intelligence module
+- Added Semantic Matrix, HTML parsing and private-address rejection tests
+- Added `docs/WEB_INTELLIGENCE.md` and independent-development boundaries for website/semantic workflows
+
 ## 0.13.0 - 2026-09-19
 
 - Added a project resource-ownership registry for persisted datasets, human-review items and local models
