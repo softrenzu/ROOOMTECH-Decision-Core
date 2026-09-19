@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app.candidate_bulk_import_api import install_candidate_bulk_import_api
 from app.candidate_catalog_api import install_candidate_catalog_api
+from app.decision_accelerator_api import install_decision_accelerator_api
 from app.dynamic_candidates import (
     DynamicCandidateEngine,
     DynamicCandidateRequest,
@@ -85,7 +86,9 @@ def install_dynamic_candidate_api(app, enterprise_services, operations: Operatio
                 )
 
     app.include_router(router)
-    # Candidate-platform sub-APIs share the same candidates authorization scope.
+    # Project decision/candidate sub-APIs are installed after enterprise services
+    # exist so each endpoint can enforce its own scoped project-key boundary.
+    install_decision_accelerator_api(app, enterprise_services, operations.engine)
     install_candidate_catalog_api(app, enterprise_services, operations)
     install_candidate_bulk_import_api(app, enterprise_services)
     return engine
