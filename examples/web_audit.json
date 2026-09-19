@@ -1,0 +1,11 @@
+{
+  "start_url": "https://example.com/",
+  "max_pages": 250,
+  "concurrency": 8,
+  "request_timeout_seconds": 10,
+  "max_page_bytes": 2000000,
+  "respect_robots_txt": true,
+  "include_query_strings": false,
+  "suggestions_per_page": 5,
+  "min_semantic_score": 0.18
+}
