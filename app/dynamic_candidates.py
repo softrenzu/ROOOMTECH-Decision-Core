@@ -39,8 +39,8 @@ class DynamicCandidateRequest(BaseModel):
             raise ValueError("ngram_max must be >= ngram_min")
         if self.final_k > self.shortlist_k:
             raise ValueError("final_k must be <= shortlist_k")
-        if self.external_rerank_k > self.shortlist_k:
-            raise ValueError("external_rerank_k must be <= shortlist_k")
+        if self.final_method == "openai_compatible" and self.external_rerank_k > self.shortlist_k:
+            raise ValueError("external_rerank_k must be <= shortlist_k when external reranking is enabled")
         ids = [item.id for item in self.candidates]
         if len(ids) != len(set(ids)):
             raise ValueError("candidate ids must be unique")
