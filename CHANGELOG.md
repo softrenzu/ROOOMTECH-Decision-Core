@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.15.0 - 2026-09-19
+
+- Added governed WordPress connectors using standard REST API application-password authentication
+- Connector records persist only environment-variable names for credentials; WordPress secret values are never stored in the web-change database
+- Added staged website audits that turn internal-link opportunities into project-owned change proposals
+- Added conservative HTML insertion that only modifies an exact unlinked text node and refuses scripts, styles, code, preformatted content, existing links, and ambiguous cases
+- Added source-content SHA-256 snapshot checks so approved changes become `stale` instead of overwriting a page that changed after review
+- Added pending/approved/rejected/applied/stale/failed proposal lifecycle
+- Added explicit approve, reject, apply, and review-then-one-click `approve-apply` APIs
+- Added `/web-review` UI for connector setup, audit staging, preview review, rejection, and explicit one-click WordPress application
+- Added interval-based scheduled audits; scheduled jobs only create review proposals and never auto-publish changes
+- Added SQLite persistence for connectors, audit runs, proposals, and schedules with project isolation
+- Added atomic schedule claiming to reduce duplicate execution when multiple processes share the same SQLite database
+- Added metadata-only enterprise audit events for staged audits and WordPress apply actions
+- Added fail-closed network and write controls inherited from Website Intelligence: public HTTP(S) destinations only, configured-origin WordPress API calls, authentication, bounded discovery, and no arbitrary URL write endpoint
+- Added unit tests for tenant isolation, conservative link insertion, successful approved apply, and stale-source refusal
+
 ## 0.14.0 - 2026-09-19
 
 - Added a local many-to-many Semantic Matrix for high-cardinality candidate generation without external model calls
