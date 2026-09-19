@@ -47,6 +47,7 @@ from app.performance_models import (
 )
 from app.realtime import RealtimeDispatcher
 from app.schema_extraction import SchemaExtractor
+from app.semantic_matrix import SemanticMatrixEngine, SemanticMatrixRequest, SemanticMatrixResponse
 from app.tenant_context import reset_tenant_context, set_tenant_context
 
 app = FastAPI(
@@ -59,6 +60,7 @@ benchmark_runner = BenchmarkRunner(engine.local)
 multimodal_engine = MultimodalDecisionEngine(engine)
 operations_engine = OperationalDecisionEngine(engine)
 schema_extractor = SchemaExtractor(engine.model)
+semantic_matrix_engine = SemanticMatrixEngine()
 mapreduce_engine = MapReduceEngine(engine, operations_engine, schema_extractor)
 distributed_mapreduce = RedisDistributedMapReduce(mapreduce_engine)
 fast_path = FastPathEngine(engine, operations_engine, schema_extractor)
@@ -116,11 +118,11 @@ async def info():
         "multimodal": {"image": multimodal_engine.vision.configured, "pdf": True, "audio": True},
         "operations": [
             "classification", "detection", "routing", "scoring", "verification",
-            "ranking", "search", "feature_extraction", "structured_extraction",
+            "ranking", "search", "feature_extraction", "structured_extraction", "semantic_matrix",
             "mapreduce", "realtime_streaming", "realtime_fast_path", "performance_benchmarking",
             "governed_datasets", "active_learning", "guardrail_gateway", "tool_call_gate", "rag_verification",
             "enterprise_projects", "scoped_api_keys", "daily_quotas", "audit_log", "model_promotion_rollback",
-            "tenant_resource_isolation", "project_websocket_auth",
+            "tenant_resource_isolation", "project_websocket_auth", "website_intelligence",
         ],
         "fast_path": {
             "profile_count": len(profiles),
@@ -372,6 +374,14 @@ async def operation_features(request: FeatureExtractionRequest):
     return await operations_engine.extract_features(request)
 
 
+@app.post("/v1/ops/matrix", response_model=SemanticMatrixResponse)
+async def operation_semantic_matrix(request: SemanticMatrixRequest):
+    try:
+        return await asyncio.to_thread(semantic_matrix_engine.run, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/v1/multimodal/decide", response_model=MultimodalDecisionResponse)
 async def decide_multimodal(decisions_json: str = Form(...), text: str = Form(default=""), provider: str = Form(default="auto"), image_weight: float = Form(default=0.55), files: list[UploadFile] | None = File(default=None)):
     try:
@@ -455,6 +465,7 @@ from app.dataset_api import install_dataset_api
 from app.guardrail_api import install_guardrail_api
 from app.enterprise_api import install_enterprise_api
 from app.tenant_api import install_tenant_resource_api
+from app.web_intelligence_api import install_web_intelligence_api
 
 studio_services = install_studio(app, engine, fast_path)
 dataset_services = install_dataset_api(app, engine, benchmark_runner, studio_services.reviews)
@@ -467,3 +478,4 @@ tenant_resource_services = install_tenant_resource_api(
     studio_services.reviews,
     engine.local,
 )
+web_intelligence_engine = install_web_intelligence_api(app, enterprise_services)
