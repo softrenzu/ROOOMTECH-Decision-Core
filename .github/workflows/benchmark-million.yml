@@ -1,0 +1,44 @@
+name: benchmark-million
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/atomic_catalog.py"
+      - "app/shared_object_store.py"
+      - "scripts/benchmark_million_atomic_catalog.py"
+      - ".github/workflows/benchmark-million.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  million-row-atomic-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RTDC_BENCHMARK_ROWS: "1000000"
+      RTDC_BENCHMARK_BATCH_SIZE: "10000"
+      RTDC_BENCHMARK_QUERIES: "100"
+      RTDC_BENCHMARK_OUTPUT: benchmark-million.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - name: Run actual 1M-row benchmark
+        run: |
+          set -o pipefail
+          /usr/bin/time -v python scripts/benchmark_million_atomic_catalog.py 2>&1 | tee benchmark-million.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-million-${{ github.sha }}
+          path: |
+            benchmark-million.json
+            benchmark-million.log
+          if-no-files-found: warn
