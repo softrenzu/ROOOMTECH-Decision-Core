@@ -1,7 +1,7 @@
 [project]
 name = "rooomtech-decision-core"
-version = "0.21.0"
-description = "Independent multimodal decision platform with immutable atomic catalog generations, shared object storage, bulk imports, governed decision graphs, tenant isolation, guardrails and realtime inference"
+version = "0.22.0"
+description = "Independent typed decision acceleration platform with bounded LLM fallback, immutable atomic catalogs, shared object storage, governed decision graphs, tenant isolation, guardrails and realtime inference"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
