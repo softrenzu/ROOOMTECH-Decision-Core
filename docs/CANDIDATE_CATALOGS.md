@@ -1,6 +1,6 @@
 # Persistent Candidate Catalogs
 
-ROOOMTECH Decision Core v0.18 adds project-scoped persistent candidate catalogs. The purpose is to index candidates once, then perform later decisions by sending only a query and optional metadata filters instead of retransmitting the full candidate set on every request.
+ROOOMTECH Decision Core v0.19 provides project-scoped persistent candidate catalogs with snapshots, integrity checks and transactional index rebuild/restore operations. Candidates are indexed once; later decisions send only a query and optional metadata filters instead of retransmitting the full candidate set on every request.
 
 This feature is independently designed and uses RTDC's own sparse Unicode character n-gram indexing. It does not reproduce a third-party SDK, private protocol, benchmark corpus or proprietary output behavior.
 
@@ -14,6 +14,13 @@ DELETE /v1/project/candidate-catalogs/{catalog_id}
 PUT    /v1/project/candidate-catalogs/{catalog_id}/items
 POST   /v1/project/candidate-catalogs/{catalog_id}/items/delete
 POST   /v1/project/candidate-catalogs/{catalog_id}/search
+
+POST   /v1/project/candidate-catalogs/{catalog_id}/snapshots
+GET    /v1/project/candidate-catalogs/{catalog_id}/snapshots
+DELETE /v1/project/candidate-catalogs/{catalog_id}/snapshots/{snapshot_id}
+POST   /v1/project/candidate-catalogs/{catalog_id}/snapshots/{snapshot_id}/restore
+GET    /v1/project/candidate-catalogs/{catalog_id}/integrity
+POST   /v1/project/candidate-catalogs/{catalog_id}/rebuild
 ```
 
 Enterprise deployments use a project key with the `candidates` scope. Outside enterprise mode, configure `RTDC_CANDIDATE_API_KEY` or use the admin key.
@@ -70,6 +77,35 @@ The client no longer needs to send the candidate list. RTDC hashes the query, lo
 
 By default result text is omitted. Set `include_text=true` only when the caller needs the stored text returned.
 
+## Safe catalog changes with snapshots
+
+Before a large catalog update, create a snapshot:
+
+```json
+{
+  "note": "before supplier feed refresh"
+}
+```
+
+A snapshot copies the current catalog item set into project-scoped snapshot tables in the same database. If an update causes bad retrieval behavior, restoring that snapshot replaces the live item set and rebuilds the sparse index inside one SQLite transaction. Searches using the same process do not observe a partially rebuilt index.
+
+Snapshots are intended as an application-level rollback mechanism, not as a substitute for database backups. A deleted database, storage corruption outside SQLite's transaction guarantees, or an infrastructure incident still requires normal backup and recovery procedures.
+
+## Integrity check and rebuild
+
+`GET /integrity` reports:
+
+- total stored items,
+- number of items with sparse index rows,
+- total sparse feature rows,
+- stored items missing feature rows,
+- orphan feature rows,
+- an overall `ok` flag.
+
+`POST /rebuild` discards the derived sparse feature rows for that project/catalog and recreates them from the persisted catalog text using the catalog's fixed feature settings. The persisted candidate text and metadata are the source of truth for this repair operation.
+
+The rebuild is transactional in the reference SQLite implementation. It is a maintenance operation and should not be invoked on every query.
+
 ## Optional bounded reranking
 
 Set `final_method` to `openai_compatible` to send only a bounded shortlist to the configured model provider. `external_rerank_k` is capped at 50. The local inverted index still performs first-stage candidate reduction.
@@ -78,25 +114,21 @@ When external reranking is enabled, the query and the bounded shortlist text lea
 
 ## Storage and indexing
 
-The reference implementation uses SQLite with three logical structures:
+The reference implementation uses SQLite with catalog metadata, persisted candidate text/metadata, an inverted feature table, and project-scoped snapshot tables. The default database is `data/candidate_catalogs.sqlite3` and can be changed with `RTDC_CANDIDATE_CATALOG_DB`.
 
-- catalog metadata,
-- persisted candidate text and metadata,
-- an inverted feature table keyed by hashed Unicode character n-gram feature IDs.
-
-The default database is `data/candidate_catalogs.sqlite3` and can be changed with `RTDC_CANDIDATE_CATALOG_DB`.
-
-Unlike the request-only Dynamic Candidate API, catalog text is intentionally persisted because persistence is the point of the feature. Treat the database as application data: protect it with normal storage encryption, backups, access control and retention policy appropriate to the deployment.
+Unlike the request-only Dynamic Candidate API, catalog text is intentionally persisted because persistence is the point of the feature. Snapshot contents also persist candidate text. Treat the database as application data: protect it with normal storage encryption, backups, access control and retention policy appropriate to the deployment.
 
 ## Tenant boundary
 
-Every catalog, item and feature row is keyed by `project_id`. A catalog created by one enterprise project is returned as not-found to another project. This is an application authorization boundary in the reference SQLite implementation; production multi-tenant SaaS deployments should additionally use storage-layer controls, encrypted volumes and operational isolation appropriate to their risk model.
+Every catalog, item, feature row and snapshot is keyed by `project_id`. A catalog created by one enterprise project is returned as not-found to another project. Snapshot restore and maintenance operations use the same project boundary.
+
+This is an application authorization boundary in the reference SQLite implementation; production multi-tenant SaaS deployments should additionally use storage-layer controls, encrypted volumes and operational isolation appropriate to their risk model.
 
 ## Scale boundary
 
 The persistent index removes the need to recompute and resend every candidate on every decision. Query work is driven by sparse feature overlap rather than a full text re-encoding pass over the whole catalog.
 
-SQLite is the reference implementation, not a claim of unlimited scale. For very large catalogs, high write concurrency, or multi-region deployment, the same API can be backed by a dedicated inverted-index or vector/search service while retaining RTDC's project authorization, bounded reranking and review-gating semantics.
+SQLite is the reference implementation, not a claim of unlimited scale. For very large catalogs, high write concurrency, or multi-region deployment, the same API can be backed by a dedicated inverted-index or vector/search service while retaining RTDC's project authorization, bounded reranking, snapshots and review-gating semantics.
 
 ## Calibration
 
