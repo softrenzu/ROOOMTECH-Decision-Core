@@ -77,6 +77,6 @@ def test_candidate_request_rejects_excess_text_budget():
 def test_candidate_and_graph_routes_are_wired():
     from app.main import app
 
-    paths = {route.path for route in app.routes if hasattr(route, "path")}
+    paths = set(app.openapi()["paths"])
     assert "/v1/project/candidates/select" in paths
     assert "/v1/project/graphs/validate" in paths
