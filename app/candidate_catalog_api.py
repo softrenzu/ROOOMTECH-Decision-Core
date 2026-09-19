@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
+from app.atomic_catalog_api import install_atomic_catalog_api
 from app.candidate_catalog import (
     CandidateCatalogCreate,
     CandidateCatalogDeleteItemsRequest,
@@ -38,6 +39,7 @@ def install_candidate_catalog_api(app, enterprise_services, operations: Operatio
     store = CandidateCatalogStore()
     engine = CandidateCatalogEngine(store, operations)
     snapshots = CandidateCatalogSnapshotManager(store)
+    atomic = install_atomic_catalog_api(app, enterprise_services, operations)
     router = APIRouter(prefix="/v1/project/candidate-catalogs")
 
     def _auth(*, consume_quota: bool = False):
@@ -179,7 +181,14 @@ def install_candidate_catalog_api(app, enterprise_services, operations: Operatio
         started = time.perf_counter()
         status_code = 500
         try:
-            result = await engine.search(project_id(auth), catalog_id, payload)
+            pid = project_id(auth)
+            # Once an immutable generation is activated, the existing production
+            # search endpoint switches to it. The active pointer flip is a short
+            # control-plane transaction; readers never see a partially built index.
+            if atomic.runtime.has_active(pid, catalog_id):
+                result = await atomic.runtime.search(pid, catalog_id, payload)
+            else:
+                result = await engine.search(pid, catalog_id, payload)
             status_code = 200
             return result
         except FileNotFoundError as exc:
