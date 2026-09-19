@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
+from app.candidate_bulk_import_api import install_candidate_bulk_import_api
 from app.candidate_catalog_api import install_candidate_catalog_api
 from app.dynamic_candidates import (
     DynamicCandidateEngine,
@@ -84,7 +85,7 @@ def install_dynamic_candidate_api(app, enterprise_services, operations: Operatio
                 )
 
     app.include_router(router)
-    # v0.18: the same candidate authorization scope also exposes persistent,
-    # project-scoped catalogs so callers can index once and send only a query later.
+    # Candidate-platform sub-APIs share the same candidates authorization scope.
     install_candidate_catalog_api(app, enterprise_services, operations)
+    install_candidate_bulk_import_api(app, enterprise_services)
     return engine
