@@ -13,6 +13,7 @@ from app.decision_accelerator import (
     DecisionAcceleratorResponse,
 )
 from app.engine import DecisionEngine
+from app.parallel_head_model_api import install_parallel_head_model_api
 from app.tenant_context import reset_tenant_context, set_tenant_context
 
 
@@ -23,7 +24,8 @@ def _enterprise_enforced() -> bool:
 
 
 def install_decision_accelerator_api(app, enterprise_services, engine: DecisionEngine):
-    accelerator = DecisionAccelerator(engine)
+    parallel_models = install_parallel_head_model_api(app, enterprise_services)
+    accelerator = DecisionAccelerator(engine, parallel_models=parallel_models)
     router = APIRouter(prefix="/v1/project")
 
     def require_access(
@@ -66,6 +68,7 @@ def install_decision_accelerator_api(app, enterprise_services, engine: DecisionE
         started = time.perf_counter()
         status_code = 500
         tenant_token = None
+        project_id = auth.project_id if auth is not True else "local"
         try:
             if _enterprise_enforced() and auth is not True:
                 registry = enterprise_services.resource_registry
@@ -78,9 +81,12 @@ def install_decision_accelerator_api(app, enterprise_services, engine: DecisionE
                         except FileNotFoundError as exc:
                             raise HTTPException(status_code=404, detail=str(exc)) from exc
                 tenant_token = set_tenant_context(auth.project_id, registry)
-            result = await accelerator.evaluate(payload)
+            result = await accelerator.evaluate(payload, project_id=project_id)
             status_code = 200
             return result
+        except FileNotFoundError as exc:
+            status_code = 404
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             status_code = 400
             raise HTTPException(status_code=400, detail=str(exc)) from exc
