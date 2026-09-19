@@ -119,6 +119,7 @@ async def info():
         "operations": [
             "classification", "detection", "routing", "scoring", "verification",
             "ranking", "search", "feature_extraction", "structured_extraction", "semantic_matrix",
+            "dynamic_candidate_selection", "decision_graph_runtime",
             "mapreduce", "realtime_streaming", "realtime_fast_path", "performance_benchmarking",
             "governed_datasets", "active_learning", "guardrail_gateway", "tool_call_gate", "rag_verification",
             "enterprise_projects", "scoped_api_keys", "daily_quotas", "audit_log", "model_promotion_rollback",
@@ -466,6 +467,8 @@ from app.guardrail_api import install_guardrail_api
 from app.enterprise_api import install_enterprise_api
 from app.tenant_api import install_tenant_resource_api
 from app.web_intelligence_api import install_web_intelligence_api
+from app.decision_graph_api import install_decision_graph_api
+from app.dynamic_candidate_api import install_dynamic_candidate_api
 
 studio_services = install_studio(app, engine, fast_path)
 dataset_services = install_dataset_api(app, engine, benchmark_runner, studio_services.reviews)
@@ -479,3 +482,5 @@ tenant_resource_services = install_tenant_resource_api(
     engine.local,
 )
 web_intelligence_engine = install_web_intelligence_api(app, enterprise_services)
+decision_graph_services = install_decision_graph_api(app, enterprise_services)
+dynamic_candidate_engine = install_dynamic_candidate_api(app, enterprise_services, operations_engine)
