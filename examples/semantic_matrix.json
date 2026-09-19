@@ -1,0 +1,11 @@
+{
+  "left": [
+    {"id": "ticket-1", "text": "エアコンが冷えません。故障でしょうか"}
+  ],
+  "right": [
+    {"id": "article-aircon", "text": "冷房が効かないときの確認方法とエアコン故障時の対応"},
+    {"id": "article-payment", "text": "クレジットカード決済と請求書について"}
+  ],
+  "top_k_per_left": 5,
+  "min_score": 0.1
+}
