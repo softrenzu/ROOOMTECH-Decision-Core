@@ -8,6 +8,7 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from app.decision_graph_api import install_decision_graph_api
 from app.web_change_management import (
     AuditRunSummary,
     ConnectorTestResult,
@@ -43,10 +44,13 @@ def _enterprise_enforced() -> bool:
 
 
 def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine:
+    # Decision Graph is an independent extension and remains usable even when the
+    # website crawler itself is disabled. This installation point runs after the
+    # enterprise/tenant services have been initialized.
+    install_decision_graph_api(app, enterprise_services)
+
     engine = WebsiteAuditEngine()
     changes = WebChangeService(engine)
-    # Project-prefixed on purpose: enterprise middleware treats /v1/project/* as
-    # management/project APIs, so this module applies its dedicated `web` scope.
     router = APIRouter(prefix="/v1/project/web")
 
     def require_web_access(
@@ -75,8 +79,6 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
                     headers={"Retry-After": "86400"},
                 ) from exc
 
-        # Server-side fetching and write connectors must never become an
-        # unauthenticated public proxy/control surface.
         expected = os.getenv("RTDC_ADMIN_API_KEY", "").strip()
         if not expected:
             raise HTTPException(
@@ -105,15 +107,10 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
 
     @app.get("/web-review", response_class=HTMLResponse)
     async def web_review_ui():
-        # The shell contains no tenant data. All data/API calls remain protected.
         return HTMLResponse(render_web_review_html())
 
     @router.post("/audit", response_model=WebsiteAuditResponse)
-    async def audit_website(
-        payload: WebsiteAuditRequest,
-        request: Request,
-        auth=Depends(require_web_access),
-    ):
+    async def audit_website(payload: WebsiteAuditRequest, request: Request, auth=Depends(require_web_access)):
         started = time.perf_counter()
         status_code = 500
         try:
@@ -125,18 +122,12 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             status_code = 502
-            raise HTTPException(
-                status_code=502,
-                detail=f"website audit failed: {type(exc).__name__}: {exc}",
-            ) from exc
+            raise HTTPException(status_code=502, detail=f"website audit failed: {type(exc).__name__}: {exc}") from exc
         finally:
             audit_meta(auth, "POST", "/v1/project/web/audit", status_code, started, request)
 
     @router.post("/connectors/wordpress", response_model=WordPressConnectorSummary)
-    async def create_wordpress_connector(
-        payload: WordPressConnectorCreate,
-        auth=Depends(require_web_access),
-    ):
+    async def create_wordpress_connector(payload: WordPressConnectorCreate, auth=Depends(require_web_access)):
         try:
             return await changes.create_connector(project_id_for(auth), payload)
         except ValueError as exc:
@@ -154,11 +145,7 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.post("/audits/stage", response_model=StagedAuditResponse)
-    async def stage_audit(
-        payload: StageAuditRequest,
-        request: Request,
-        auth=Depends(require_web_access),
-    ):
+    async def stage_audit(payload: StageAuditRequest, request: Request, auth=Depends(require_web_access)):
         started = time.perf_counter()
         status_code = 500
         try:
@@ -181,10 +168,7 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
             audit_meta(auth, "POST", "/v1/project/web/audits/stage", status_code, started, request)
 
     @router.get("/audit-runs", response_model=list[AuditRunSummary])
-    async def list_audit_runs(
-        limit: int = Query(default=100, ge=1, le=1000),
-        auth=Depends(require_web_access),
-    ):
+    async def list_audit_runs(limit: int = Query(default=100, ge=1, le=1000), auth=Depends(require_web_access)):
         return changes.store.list_runs(project_id_for(auth), limit=limit)
 
     @router.get("/proposals", response_model=list[LinkChangeProposal])
@@ -223,11 +207,7 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.post("/proposals/{proposal_id}/apply", response_model=LinkChangeProposal)
-    async def apply_proposal(
-        proposal_id: str,
-        request: Request,
-        auth=Depends(require_web_access),
-    ):
+    async def apply_proposal(proposal_id: str, request: Request, auth=Depends(require_web_access)):
         started = time.perf_counter()
         status_code = 500
         try:
@@ -246,13 +226,7 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
             audit_meta(auth, "POST", f"/v1/project/web/proposals/{proposal_id}/apply", status_code, started, request)
 
     @router.post("/proposals/{proposal_id}/approve-apply", response_model=LinkChangeProposal)
-    async def approve_and_apply_proposal(
-        proposal_id: str,
-        request: Request,
-        auth=Depends(require_web_access),
-    ):
-        # This is the explicit one-click action used after the caller has reviewed
-        # the proposal/preview. Scheduled audits never call this endpoint.
+    async def approve_and_apply_proposal(proposal_id: str, request: Request, auth=Depends(require_web_access)):
         started = time.perf_counter()
         status_code = 500
         try:
@@ -300,7 +274,5 @@ def install_web_intelligence_api(app, enterprise_services) -> WebsiteAuditEngine
         await changes.stop_scheduler()
         changes.store.close()
 
-    # Keep the existing return type/contract for main.py while making the change
-    # workflow reachable for diagnostics/tests without adding another global.
     engine.change_service = changes
     return engine
